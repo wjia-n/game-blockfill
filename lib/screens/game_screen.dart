@@ -1,21 +1,30 @@
 import 'package:flutter/material.dart';
 import 'dart:math';
-import '../audio.dart';
 import '../design.dart';
 import '../engine.dart';
 import '../game_controller.dart';
-import '../scores.dart';
+import '../services/audio_service.dart';
+import '../services/settings_service.dart';
+import '../theme/workshop_themes.dart';
 import '../widgets/wood.dart';
 import 'gameover_screen.dart';
 import 'settings_screen.dart';
 
-/// Gameplay screen: recessed walnut 8x8 mortise tray, kraft score plaques,
-/// combo tag, staging tray with 3 oak pieces (drag or tap to place),
-/// pause/rotate/hint knobs, MENU chip, pause overlay.
+/// Gameplay screen: recessed 8x8 mortise tray, kraft score plaques, combo tag,
+/// blitz timer, staging tray with 3 pieces (drag or tap to place), sawdust
+/// particle bursts on clear, combo celebrations, pause/rotate/hint knobs.
 class GameScreen extends StatefulWidget {
-  final bool daily;
+  final GameMode mode;
   final String? dailyDate;
-  const GameScreen({super.key, this.daily = false, this.dailyDate});
+  final WorkshopAudio audio;
+  final BlockFillSettings settings;
+  const GameScreen({
+    super.key,
+    required this.mode,
+    required this.audio,
+    required this.settings,
+    this.dailyDate,
+  });
 
   @override
   State<GameScreen> createState() => _GameScreenState();
@@ -25,11 +34,18 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   late GameController _c;
   final _boardKey = GlobalKey();
 
+  WorkshopThemeDef get _t => widget.settings.theme;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _c = GameController(daily: widget.daily, dailyDate: widget.dailyDate);
+    _c = GameController(
+      mode: widget.mode,
+      dailyDate: widget.dailyDate,
+      audio: widget.audio,
+      settings: widget.settings,
+    );
     _c.addListener(_onGameOver);
   }
 
@@ -42,12 +58,15 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
             builder: (_) => GameOverScreen(
               score: _c.score,
               isBest: _c.newBest,
+              timedOut: _c.gameOverByTimeout,
               piecesPlaced: _c.engine.piecesPlaced,
               linesCleared: _c.engine.linesCleared,
               bestCombo: _c.engine.bestCombo,
               level: _c.engine.level,
-              daily: widget.daily,
+              mode: widget.mode,
               dailyDate: widget.dailyDate,
+              audio: widget.audio,
+              settings: widget.settings,
             ),
           ),
         );
@@ -72,33 +91,47 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     super.dispose();
   }
 
+  BlockStyleDef _styleOf(int i) =>
+      styleFor(i, widget.settings.colorBlind);
+
   @override
   Widget build(BuildContext context) {
+    final t = _t;
     return ListenableBuilder(
       listenable: _c,
       builder: (context, _) {
         return Scaffold(
           body: WorkbenchBackground(
+            theme: t,
             child: SafeArea(
               child: Stack(
                 children: [
                   Column(
                     children: [
-                      _topRail(),
+                      _topRail(t),
                       const SizedBox(height: 6),
-                      Expanded(child: Center(child: _board())),
+                      Expanded(child: Center(child: _board(t))),
                       const SizedBox(height: 6),
-                      _hintBar(),
+                      _hintBar(t),
                       const SizedBox(height: 4),
-                      _tray(),
+                      _tray(t),
                       const SizedBox(height: 6),
-                      _toolRail(),
+                      _toolRail(t),
                       const SizedBox(height: 10),
                     ],
                   ),
-                  if (_c.dragging) _dragOverlay(),
-                  if (_c.popupText != null) _popup(),
-                  if (_c.paused) _pauseOverlay(),
+                  if (_c.dragging) _dragOverlay(t),
+                  if (_c.popupText != null) _popup(t),
+                  if (_c.celebrateCombo >= 2)
+                    Center(
+                      child: ComboCelebration(
+                        key: ValueKey('cel-${_c.celebrateId}'),
+                        combo: _c.celebrateCombo,
+                        celebrateId: _c.celebrateId,
+                        theme: t,
+                      ),
+                    ),
+                  if (_c.paused) _pauseOverlay(t),
                 ],
               ),
             ),
@@ -110,35 +143,41 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
 
   // --- top rail -----------------------------------------------------------
 
-  Widget _topRail() {
+  Widget _topRail(WorkshopThemeDef t) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 6, 14, 0),
       child: Row(
         children: [
           KraftPlaque(
+            theme: t,
             tilt: -0.02,
             padding: const EdgeInsets.fromLTRB(14, 10, 14, 6),
             child: Column(
               children: [
-                Text('SCORE', style: Workshop.label(10)),
-                Text('${_c.score}', style: Workshop.digits(24)),
+                Text('SCORE', style: Workshop.label(10, color: t.textSoft)),
+                Text('${_c.score}',
+                    style: Workshop.digits(24, color: t.text)),
               ],
             ),
           ),
           const SizedBox(width: 8),
-          Expanded(child: _levelStrip()),
+          Expanded(
+              child: widget.mode == GameMode.blitz
+                  ? _blitzTimer(t)
+                  : _levelStrip(t)),
           const SizedBox(width: 8),
           Column(
             children: [
               WoodKnob(
+                  theme: t,
                   icon: Icons.pause,
                   size: 46,
                   onTap: () {
-                    Sound.I.click();
+                    widget.audio.click();
                     _c.setPaused(true);
                   }),
               const SizedBox(height: 2),
-              ComboTag(combo: _c.engine.combo),
+              ComboTag(combo: _c.engine.combo, theme: t),
             ],
           ),
         ],
@@ -146,33 +185,67 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     );
   }
 
+  /// Blitz countdown plaque: mm:ss, turns urgent under 15s.
+  Widget _blitzTimer(WorkshopThemeDef t) {
+    final secs = (_c.engine.timeLeftMs / 1000).ceil();
+    final mm = secs ~/ 60;
+    final ss = (secs % 60).toString().padLeft(2, '0');
+    final urgent = secs <= 15;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: urgent ? t.comboRed : t.kraftDark,
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: t.trayFrame, width: 2),
+        boxShadow: Workshop.insetShadow,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text('BLITZ',
+              style: Workshop.label(11,
+                  color: urgent ? t.kraft : t.text)),
+          Text('$mm:$ss',
+              style: Workshop.digits(26,
+                  color: urgent ? t.kraft : t.text)),
+          Text('BEST ${_c.best}',
+              style: Workshop.digits(13,
+                  color: (urgent ? t.kraft : t.text)
+                      .withValues(alpha: 0.8))),
+        ],
+      ),
+    );
+  }
+
   /// Carpenter's ruler craftsman-level progress strip.
-  Widget _levelStrip() {
+  Widget _levelStrip(WorkshopThemeDef t) {
     final level = _c.engine.level;
     final progress = (_c.score % 500) / 500;
     final title = BlockFillEngine.titleFor(_c.score);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: Workshop.kraftDark,
+        color: t.kraftDark,
         borderRadius: BorderRadius.circular(4),
-        border: Border.all(color: Workshop.walnut, width: 2),
+        border: Border.all(color: t.trayFrame, width: 2),
         boxShadow: Workshop.insetShadow,
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           Text('LV $level · $title',
-              style: Workshop.label(11), textAlign: TextAlign.center),
+              style: Workshop.label(11, color: t.text),
+              textAlign: TextAlign.center),
           const SizedBox(height: 4),
           SizedBox(
             height: 10,
             child: CustomPaint(
-              painter: _RulerPainter(progress: progress),
+              painter: _RulerPainter(progress: progress, t: t),
               child: const SizedBox.expand(),
             ),
           ),
-          Text('BEST ${_c.best}', style: Workshop.digits(13)),
+          Text('BEST ${_c.best}',
+              style: Workshop.digits(13, color: t.text)),
         ],
       ),
     );
@@ -180,20 +253,21 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
 
   // --- board --------------------------------------------------------------
 
-  Widget _board() {
+  Widget _board(WorkshopThemeDef t) {
     return LayoutBuilder(
       builder: (context, constraints) {
         final side = constraints.biggest.shortestSide.clamp(280.0, 520.0);
         final cell = (side - 20) / 8;
+        final accent = BoardAccents.byIndex(widget.settings.boardAccentId);
         return Container(
           key: _boardKey,
           width: side,
           height: side,
           padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(
-            color: Workshop.walnut,
+            color: accent.frame,
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: const Color(0xFF2E1D0E), width: 3),
+            border: Border.all(color: t.text, width: 3),
             boxShadow: const [
               BoxShadow(
                   color: Color(0x66000000),
@@ -222,9 +296,21 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
                     crossAxisSpacing: 3,
                   ),
                   itemCount: 64,
-                  itemBuilder: (_, i) => _boardCell(i, cell),
+                  itemBuilder: (_, i) => _boardCell(i, cell, t),
                 ),
-                SawdustMotes(active: _c.aboutToClear.isNotEmpty),
+                SawdustMotes(
+                    active: _c.aboutToClear.isNotEmpty, theme: t),
+                if (_c.burstCells.isNotEmpty)
+                  ClearBurst(
+                    key: ValueKey('burst-${_c.burstId}'),
+                    cells: {
+                      for (final e in _c.burstCells.entries)
+                        e.key: _styleOf(e.value).mid,
+                    },
+                    pitch: cell + 3,
+                    burstId: _c.burstId,
+                    theme: t,
+                  ),
               ],
             ),
           ),
@@ -243,10 +329,9 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     return (r, c);
   }
 
-  Widget _boardCell(int i, double cell) {
-    final cb = ScoreStore.I.colorBlind;
+  Widget _boardCell(int i, double cell, WorkshopThemeDef t) {
     if (_c.sweepAnim.containsKey(i)) {
-      // Sweep: cleared block shrinks away with a puff of sawdust color.
+      // Sweep: cleared block shrinks away.
       return TweenAnimationBuilder<double>(
         key: ValueKey('sweep-${_c.sweepId}-$i'),
         tween: Tween(begin: 1.0, end: 0.0),
@@ -258,9 +343,10 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
             child: CustomPaint(
               painter: PiecePainter(
                 shape: const PieceShape([Point(0, 0)], 1, 1),
-                stain: stainColor(_c.sweepAnim[i]!, cb),
+                style: _styleOf(_c.sweepAnim[i]!),
                 cell: cell,
                 knotIndex: -1,
+                ghostTint: t.lampAmber,
               ),
             ),
           ),
@@ -272,38 +358,41 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
       return CustomPaint(
         painter: PiecePainter(
           shape: const PieceShape([Point(0, 0)], 1, 1),
-          stain: stainColor(stain, cb),
+          style: _styleOf(stain),
           cell: cell,
           knotIndex: -1,
+          ghostTint: t.lampAmber,
         ),
       );
     }
     if (_c.ghostCells.contains(i)) {
-      final t = _c.selected >= 0 ? _c.engine.tray[_c.selected] : null;
+      final tp = _c.selected >= 0 ? _c.engine.tray[_c.selected] : null;
       return CustomPaint(
         painter: PiecePainter(
           shape: const PieceShape([Point(0, 0)], 1, 1),
-          stain: t == null
-              ? Workshop.lampAmber
-              : stainColor(t.stain, cb),
+          style: tp == null
+              ? BlockStyleDef(
+                  name: 'ghost', light: t.lampAmber, mid: t.lampAmber, dark: t.lampAmber)
+              : _styleOf(tp.stain),
           cell: cell,
           ghost: true,
+          ghostTint: t.lampAmber,
           knotIndex: -1,
         ),
       );
     }
-    return MortiseCell(size: cell, warm: _c.aboutToClear.contains(i));
+    return MortiseCell(size: cell, warm: _c.aboutToClear.contains(i), theme: t);
   }
 
   // --- hint bar -----------------------------------------------------------
 
-  Widget _hintBar() {
+  Widget _hintBar(WorkshopThemeDef t) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
       child: Text(
         _c.hintMsg,
         style: Workshop.body(13,
-            color: Workshop.sawdust.withValues(alpha: 0.95)),
+            color: t.accentLight.withValues(alpha: 0.95)),
         textAlign: TextAlign.center,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
@@ -313,23 +402,23 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
 
   // --- tray ---------------------------------------------------------------
 
-  Widget _tray() {
+  Widget _tray(WorkshopThemeDef t) {
     return LayoutBuilder(
       builder: (context, constraints) {
         final slotW = (constraints.maxWidth - 32) / 3;
         return Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            for (var i = 0; i < 3; i++) _traySlot(i, slotW),
+            for (var i = 0; i < 3; i++) _traySlot(i, slotW, t),
           ],
         );
       },
     );
   }
 
-  Widget _traySlot(int i, double slotW) {
-    final t = _c.engine.tray[i];
-    final selected = _c.selected == i && t != null;
+  Widget _traySlot(int i, double slotW, WorkshopThemeDef t) {
+    final tp = _c.engine.tray[i];
+    final selected = _c.selected == i && tp != null;
     final cellSize = (slotW - 24) / 5;
     return GestureDetector(
       onTap: () => _c.selectPiece(i),
@@ -337,7 +426,8 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
         _c.selectPiece(i);
         _c.rotateSelected();
       },
-      onPanStart: (d) => _c.beginDrag(i, d.globalPosition.dx, d.globalPosition.dy),
+      onPanStart: (d) =>
+          _c.beginDrag(i, d.globalPosition.dx, d.globalPosition.dy),
       onPanUpdate: (d) {
         final cellPos = _cellFromGlobal(d.globalPosition);
         _c.updateDrag(d.globalPosition.dx, d.globalPosition.dy,
@@ -352,34 +442,32 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
         margin: const EdgeInsets.symmetric(horizontal: 4),
         transform: Matrix4.translationValues(0, selected ? -6 : 0, 0),
         decoration: BoxDecoration(
-          color: const Color(0xFF5E3B1C),
+          color: t.trayInset,
           borderRadius: BorderRadius.circular(8),
           border: Border.all(
-            color: selected ? Workshop.lampAmber : Workshop.walnut,
+            color: selected ? t.lampAmber : t.trayFrame,
             width: selected ? 2.5 : 2,
           ),
           boxShadow:
               selected ? Workshop.liftedShadow : Workshop.insetShadow,
         ),
         alignment: Alignment.center,
-        child: t == null
+        child: tp == null
             ? Icon(Icons.check,
-                color: Workshop.sage.withValues(alpha: 0.8), size: 26)
+                color: t.sage.withValues(alpha: 0.8), size: 26)
             : Opacity(
                 opacity: _c.dragging && selected ? 0.25 : 1.0,
                 child: PieceView(
-                  piece: _displayPiece(t),
+                  piece: tp,
                   cellSize: cellSize,
+                  style: _styleOf(tp.stain),
                   lifted: selected,
+                  ghostTint: t.lampAmber,
                 ),
               ),
       ),
     );
   }
-
-  /// Piece rendered with the player's chosen stain swatch.
-  TrayPiece _displayPiece(TrayPiece t) =>
-      TrayPiece(t.shape, ScoreStore.I.stainChoice);
 
   (int, int)? _cellFromGlobal(Offset global) {
     final box =
@@ -396,11 +484,11 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     return (r, c);
   }
 
-  Widget _dragOverlay() {
-    final t = _c.selected >= 0 ? _c.engine.tray[_c.selected] : null;
-    if (t == null) return const SizedBox.shrink();
+  Widget _dragOverlay(WorkshopThemeDef t) {
+    final tp = _c.selected >= 0 ? _c.engine.tray[_c.selected] : null;
+    if (tp == null) return const SizedBox.shrink();
     const cellSize = 34.0;
-    final w = t.shape.w * cellSize, h = t.shape.h * cellSize;
+    final w = tp.shape.w * cellSize, h = tp.shape.h * cellSize;
     return Positioned(
       left: _c.dragX - w / 2,
       top: _c.dragY - h / 2 - 30,
@@ -419,9 +507,11 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
                 ],
               ),
               child: PieceView(
-                piece: _displayPiece(t),
+                piece: tp,
                 cellSize: cellSize,
+                style: _styleOf(tp.stain),
                 lifted: true,
+                ghostTint: t.lampAmber,
               ),
             ),
           ),
@@ -432,11 +522,12 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
 
   // --- tool rail ----------------------------------------------------------
 
-  Widget _toolRail() {
+  Widget _toolRail(WorkshopThemeDef t) {
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
         WoodKnob(
+            theme: t,
             icon: Icons.rotate_right,
             onTap: () {
               if (_c.selected < 0) {
@@ -446,25 +537,28 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
               _c.rotateSelected();
             }),
         const SizedBox(width: 18),
-        WoodKnob(icon: Icons.lightbulb_outline, onTap: _c.showHint),
+        WoodKnob(theme: t, icon: Icons.lightbulb_outline, onTap: _c.showHint),
         const SizedBox(width: 18),
         GestureDetector(
           onTap: () {
-            Sound.I.click();
+            widget.audio.click();
             _c.setPaused(true);
             Navigator.of(context).push(MaterialPageRoute(
-                builder: (_) => const SettingsScreen()));
+                builder: (_) => SettingsScreen(
+                      audio: widget.audio,
+                      settings: widget.settings,
+                    )));
           },
           child: Container(
             padding:
                 const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             decoration: BoxDecoration(
-              color: Workshop.kraft,
+              color: t.kraft,
               borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: Workshop.walnut, width: 2),
+              border: Border.all(color: t.trayFrame, width: 2),
               boxShadow: Workshop.restingShadow,
             ),
-            child: Text('MENU', style: Workshop.label(13)),
+            child: Text('MENU', style: Workshop.label(13, color: t.text)),
           ),
         ),
       ],
@@ -473,7 +567,7 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
 
   // --- overlays -----------------------------------------------------------
 
-  Widget _popup() {
+  Widget _popup(WorkshopThemeDef t) {
     return Positioned(
       top: MediaQuery.of(context).size.height * 0.32,
       left: 0,
@@ -490,14 +584,14 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
                 padding: const EdgeInsets.symmetric(
                     horizontal: 18, vertical: 8),
                 decoration: BoxDecoration(
-                  color: Workshop.brickRed,
+                  color: t.comboRed,
                   borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: Workshop.walnut, width: 2),
+                  border: Border.all(color: t.trayFrame, width: 2),
                   boxShadow: Workshop.liftedShadow,
                 ),
                 child: Text(
                   _c.popupText!,
-                  style: Workshop.burned(20, color: Workshop.sawdust),
+                  style: Workshop.burned(20, color: t.kraft),
                 ),
               ),
             ),
@@ -507,57 +601,64 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
     );
   }
 
-  Widget _pauseOverlay() {
+  Widget _pauseOverlay(WorkshopThemeDef t) {
     return Container(
       color: Colors.black.withValues(alpha: 0.55),
       child: Center(
         child: KraftPlaque(
+          theme: t,
           padding: const EdgeInsets.fromLTRB(28, 30, 28, 20),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text('BENCH PAUSED', style: Workshop.burned(26)),
+              Text('BENCH PAUSED',
+                  style: Workshop.burned(26, color: t.text)),
               const SizedBox(height: 6),
               Text('The sawdust settles…',
-                  style: Workshop.body(14,
-                      color:
-                          Workshop.burntUmber.withValues(alpha: 0.75))),
+                  style: Workshop.body(14, color: t.textSoft)),
               const SizedBox(height: 18),
               OakButton(
+                  theme: t,
                   label: 'RESUME',
                   width: 200,
                   fontSize: 20,
                   onTap: () {
-                    Sound.I.click();
+                    widget.audio.click();
                     _c.setPaused(false);
                   }),
               const SizedBox(height: 10),
               OakButton(
+                  theme: t,
                   label: 'RESTART',
                   width: 200,
                   fontSize: 20,
                   onTap: () {
-                    Sound.I.click();
+                    widget.audio.click();
                     _c.setPaused(false);
                     _c.newGame();
                   }),
               const SizedBox(height: 10),
               OakButton(
+                  theme: t,
                   label: 'SETTINGS',
                   width: 200,
                   fontSize: 20,
                   onTap: () {
-                    Sound.I.click();
+                    widget.audio.click();
                     Navigator.of(context).push(MaterialPageRoute(
-                        builder: (_) => const SettingsScreen()));
+                        builder: (_) => SettingsScreen(
+                              audio: widget.audio,
+                              settings: widget.settings,
+                            )));
                   }),
               const SizedBox(height: 10),
-              _PlankTextButton(
-                label: 'QUIT TO MENU',
-                onTap: () {
-                  Sound.I.click();
+              TextButton(
+                onPressed: () {
+                  widget.audio.click();
                   Navigator.of(context).pop();
                 },
+                child: Text('QUIT TO MENU',
+                    style: Workshop.label(14, color: t.comboRed)),
               ),
             ],
           ),
@@ -567,31 +668,16 @@ class _GameScreenState extends State<GameScreen> with WidgetsBindingObserver {
   }
 }
 
-class _PlankTextButton extends StatelessWidget {
-  final String label;
-  final VoidCallback onTap;
-  const _PlankTextButton({required this.label, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return TextButton(
-      onPressed: onTap,
-      child: Text(label,
-          style: Workshop.label(14,
-              color: Workshop.brickRed)),
-    );
-  }
-}
-
 /// Carpenter's ruler strip painter: tick marks + brass progress marker.
 class _RulerPainter extends CustomPainter {
   final double progress;
-  _RulerPainter({required this.progress});
+  final WorkshopThemeDef t;
+  _RulerPainter({required this.progress, required this.t});
 
   @override
   void paint(Canvas canvas, Size size) {
     final tick = Paint()
-      ..color = Workshop.burntUmber.withValues(alpha: 0.5)
+      ..color = t.text.withValues(alpha: 0.5)
       ..strokeWidth = 1.2;
     for (var i = 0; i <= 20; i++) {
       final x = size.width * i / 20;
@@ -600,18 +686,18 @@ class _RulerPainter extends CustomPainter {
           Offset(x, 0), Offset(x, tall ? size.height : size.height * 0.5), tick);
     }
     final mx = size.width * progress.clamp(0.0, 1.0);
-    final marker = Paint()..color = Workshop.brass;
+    final marker = Paint()..color = t.accent;
     canvas.drawCircle(Offset(mx, size.height / 2), 4.5, marker);
     canvas.drawCircle(
         Offset(mx, size.height / 2),
         4.5,
         Paint()
-          ..color = Workshop.walnut
+          ..color = t.trayFrame
           ..style = PaintingStyle.stroke
           ..strokeWidth = 1.5);
   }
 
   @override
   bool shouldRepaint(covariant _RulerPainter old) =>
-      old.progress != progress;
+      old.progress != progress || old.t != t;
 }

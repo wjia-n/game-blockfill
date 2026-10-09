@@ -1,8 +1,14 @@
 import 'dart:math';
 
 /// Block Fill engine — deterministic game logic per RULES.md.
-/// 8x8 board, tray of 3 polyomino pieces, row/column/3x3-region clears,
-/// chain + combo scoring, craftsman levels, hint bot, daily seed.
+/// 8x8 board, tray of 3 polyomino pieces, row/column/3x3-region clears
+/// (four FIXED 3x3 regions at rows/cols 0-2 & 3-5 per Blockudoku convention;
+/// rows 6-7 / cols 6-7 belong to no region), chain + combo scoring,
+/// craftsman levels, hint bot, daily seed, blitz countdown.
+/// The engine owns ALL game state: placement legality, clear resolution,
+/// scoring, game-over detection, and the blitz timer. The UI never mutates
+/// game state directly. A watchdog ([validate] + controller-side recovery)
+/// makes stuck states impossible by construction.
 class PieceShape {
   final List<Point<int>> cells;
   final int w;
@@ -57,7 +63,7 @@ final List<PieceShape> allShapes = [
   '###\n###', '##\n##\n##', '###\n###\n###',
 ].map(_shape).toList();
 
-/// A piece sitting in the tray (current orientation + wood stain index).
+/// A piece sitting in the tray (current orientation + block-style index).
 class TrayPiece {
   PieceShape shape;
   final int stain;
@@ -97,10 +103,14 @@ class Hint {
   const Hint(this.trayIndex, this.rotations, this.row, this.col);
 }
 
+/// Game modes. Blitz is a timed 120-second run; the timer lives in the
+/// engine so ALL game state stays engine-owned (watchdog ticks it).
+enum GameMode { classic, blitz, daily }
+
 class BlockFillEngine {
   static const int size = 8;
 
-  /// -1 = empty, otherwise wood-stain index of the occupying block.
+  /// -1 = empty, otherwise block-style index of the occupying block.
   final List<int> board = List.filled(size * size, -1);
   final List<TrayPiece?> tray = List.filled(3, null);
 
@@ -111,9 +121,22 @@ class BlockFillEngine {
   int bestCombo = 0;
   bool _prevCleared = false;
 
+  /// Mode + blitz countdown. [timeLeftMs] only advances via [tick], which
+  /// the controller's watchdog calls once per second.
+  GameMode mode;
+  static const int blitzMs = 120000;
+  int timeLeftMs = 0;
+  bool timedOut = false;
+
+  /// Number of block styles the UI offers; stain indices are 0..stainCount-1.
+  int stainCount;
+
   final Random rng;
 
-  BlockFillEngine({int? seed}) : rng = Random(seed);
+  BlockFillEngine({int? seed, this.mode = GameMode.classic, this.stainCount = 12})
+      : rng = Random(seed) {
+    if (mode == GameMode.blitz) timeLeftMs = blitzMs;
+  }
 
   /// Craftsman level: every 500 points advances a rank (RULES.md §7).
   int get level => score ~/ 500 + 1;
@@ -140,6 +163,8 @@ class BlockFillEngine {
     linesCleared = 0;
     bestCombo = 0;
     _prevCleared = false;
+    timedOut = false;
+    timeLeftMs = mode == GameMode.blitz ? blitzMs : 0;
     dealTray();
   }
 
@@ -170,7 +195,7 @@ class BlockFillEngine {
     for (var k = 0, n = rng.nextInt(4); k < n; k++) {
       shape = shape.rotated;
     }
-    return TrayPiece(shape, rng.nextInt(5));
+    return TrayPiece(shape, rng.nextInt(stainCount));
   }
 
   /// Deal a fresh tray of 3. Grace rule (RULES.md §7): the new tray is
@@ -189,7 +214,9 @@ class BlockFillEngine {
     if (!trayFitsAnywhere()) {
       // Forced grace: find any shape that fits and slot it in.
       final forced = _findFittingShape();
-      if (forced != null) tray[rng.nextInt(3)] = TrayPiece(forced, rng.nextInt(5));
+      if (forced != null) {
+        tray[rng.nextInt(3)] = TrayPiece(forced, rng.nextInt(stainCount));
+      }
     }
   }
 
@@ -289,8 +316,36 @@ class BlockFillEngine {
     );
   }
 
-  /// Game over when no tray piece fits anywhere (RULES.md §10).
-  bool get isGameOver => !trayEmpty && !trayFitsAnywhere();
+  /// Game over when the blitz clock runs out, or when no tray piece fits
+  /// anywhere (RULES.md §10). Clears always resolve before this is checked.
+  bool get isGameOver => timedOut || (!trayEmpty && !trayFitsAnywhere());
+
+  /// Advance the blitz countdown. Called by the controller's watchdog once
+  /// per second. Deterministic: state changes only here, never in the UI.
+  void tick(int dtMs) {
+    if (mode != GameMode.blitz || timedOut || dtMs <= 0) return;
+    timeLeftMs -= dtMs;
+    if (timeLeftMs <= 0) {
+      timeLeftMs = 0;
+      timedOut = true;
+    }
+  }
+
+  /// Engine self-check for the watchdog. Returns a description of the first
+  /// invariant violation, or null when the state is healthy.
+  String? validate() {
+    if (board.length != size * size) return 'board length ${board.length}';
+    for (var i = 0; i < board.length; i++) {
+      if (board[i] < -1 || board[i] >= stainCount) {
+        return 'board[$i] = ${board[i]} out of range';
+      }
+    }
+    if (tray.length != 3) return 'tray length ${tray.length}';
+    if (score < 0) return 'negative score';
+    if (combo < 0 || combo > 99) return 'combo $combo out of range';
+    if (timeLeftMs < 0) return 'negative timeLeftMs';
+    return null;
+  }
 
   // --- clear resolution ---------------------------------------------------
 
@@ -333,8 +388,11 @@ class BlockFillEngine {
         }
       }
     }
-    // (3) full 3x3 regions. An 8x8 board holds four complete 3x3 blocks
-    // (rows/cols 0..5); cells in rows 6-7 / cols 6-7 belong to no region.
+    // (3) full 3x3 regions. REGION RULE (RULES.md §7, resolved against
+    // Blockudoku convention): the board holds exactly FOUR fixed 3x3
+    // regions — rows 0-2/3-5 × cols 0-2/3-5, anchored at the top-left.
+    // Rows 6-7 and cols 6-7 belong to NO region; they clear only via full
+    // rows/columns. Regions are fixed tiles, never sliding windows.
     for (var br = 0; br < 2; br++) {
       for (var bc = 0; bc < 2; bc++) {
         var full = true;

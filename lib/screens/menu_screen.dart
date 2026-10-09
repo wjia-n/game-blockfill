@@ -1,36 +1,50 @@
 import 'package:flutter/material.dart';
-import 'dart:math';
-import '../audio.dart';
 import '../design.dart';
 import '../engine.dart';
-import '../scores.dart';
+import '../services/audio_service.dart';
+import '../services/iap_service.dart';
+import '../services/settings_service.dart';
+import '../theme/workshop_themes.dart';
 import '../widgets/wood.dart';
 import 'game_screen.dart';
+import 'pro_screen.dart';
 import 'settings_screen.dart';
 
-/// Main menu: wood-burned title plank, oak polyomino dressing,
-/// PLAY block, CLASSIC / DAILY CHALLENGE planks, BEST plaque, settings knob.
+/// Main menu: game logo, wood-burned title, profile chip, CLASSIC / BLITZ /
+/// DAILY planks, BEST plaques, PRO plank, settings knob.
 class MenuScreen extends StatefulWidget {
-  const MenuScreen({super.key});
+  final WorkshopAudio audio;
+  final BlockFillSettings settings;
+  final StoreService store;
+  const MenuScreen({
+    super.key,
+    required this.audio,
+    required this.settings,
+    required this.store,
+  });
 
   @override
   State<MenuScreen> createState() => _MenuScreenState();
 }
 
 class _MenuScreenState extends State<MenuScreen> {
+  WorkshopThemeDef get _t => widget.settings.theme;
+
   @override
   void initState() {
     super.initState();
-    Sound.I.menuMusic();
+    widget.audio.startMenuMusic();
   }
 
-  void _play({required bool daily}) {
-    if (daily && ScoreStore.I.dailyPlayedToday()) {
-      final best = ScoreStore.I.dailyBestFor(
-          ScoreStore.dateKey(DateTime.now()));
+  void _play(GameMode mode) {
+    final s = widget.settings;
+    if (mode == GameMode.daily && s.dailyPlayedToday()) {
+      final best =
+          s.dailyBestFor(BlockFillSettings.dateKey(DateTime.now()));
       showDialog<void>(
         context: context,
-        builder: (ctx) => _WorkshopDialog(
+        builder: (ctx) => WorkshopDialog(
+          theme: _t,
           title: 'Already planed today',
           body:
               'Today\'s daily board is done — you scored $best.\nCome back tomorrow for fresh timber!',
@@ -38,29 +52,68 @@ class _MenuScreenState extends State<MenuScreen> {
             TextButton(
               onPressed: () => Navigator.pop(ctx),
               child: Text('Back to bench',
-                  style: Workshop.label(14, color: Workshop.burntUmber)),
+                  style: Workshop.label(14, color: _t.text)),
             ),
           ],
         ),
       );
       return;
     }
-    Sound.I.click();
-    Sound.I.gameMusic();
-    Navigator.of(context).push(
+    widget.audio.click();
+    widget.audio.startGameMusic();
+    Navigator.of(context)
+        .push(
       MaterialPageRoute(
         builder: (_) => GameScreen(
-          daily: daily,
-          dailyDate: daily ? ScoreStore.dateKey(DateTime.now()) : null,
+          mode: mode,
+          dailyDate: mode == GameMode.daily
+              ? BlockFillSettings.dateKey(DateTime.now())
+              : null,
+          audio: widget.audio,
+          settings: s,
         ),
       ),
-    ).then((_) => Sound.I.menuMusic());
+    )
+        .then((_) {
+      widget.audio.startMenuMusic();
+      setState(() {});
+    });
+  }
+
+  void _openPro() {
+    widget.audio.click();
+    Navigator.of(context)
+        .push(
+      MaterialPageRoute(
+        builder: (_) => ProScreen(
+          audio: widget.audio,
+          settings: widget.settings,
+          store: widget.store,
+        ),
+      ),
+    )
+        .then((_) => setState(() {}));
+  }
+
+  void _openSettings() {
+    widget.audio.click();
+    Navigator.of(context)
+        .push(MaterialPageRoute(
+            builder: (_) => SettingsScreen(
+                  audio: widget.audio,
+                  settings: widget.settings,
+                  store: widget.store,
+                )))
+        .then((_) => setState(() {}));
   }
 
   @override
   Widget build(BuildContext context) {
+    final t = _t;
+    final s = widget.settings;
     return Scaffold(
       body: WorkbenchBackground(
+        theme: t,
         child: SafeArea(
           child: Stack(
             children: [
@@ -70,68 +123,130 @@ class _MenuScreenState extends State<MenuScreen> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const SizedBox(height: 56),
-                      // Wood-burned title plank.
-                      _TitlePlank(),
-                      const SizedBox(height: 18),
-                      // Decorative oak polyomino arrangement.
-                      const _MenuDressing(),
-                      const SizedBox(height: 26),
+                      const SizedBox(height: 44),
+                      // Game logo.
+                      Container(
+                        width: 120,
+                        height: 120,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(22),
+                          border: Border.all(color: t.accent, width: 3),
+                          boxShadow: Workshop.restingShadow,
+                        ),
+                        clipBehavior: Clip.antiAlias,
+                        child: Image.asset('assets/blockfill_logo.png',
+                            fit: BoxFit.cover),
+                      ),
+                      const SizedBox(height: 14),
+                      Text('BLOCK FILL',
+                          style: Workshop.burned(44, color: t.text)),
+                      Text('THE CARPENTER\'S WORKSHOP',
+                          style: Workshop.label(12, color: t.textSoft)),
+                      const SizedBox(height: 14),
+                      // Profile chip.
+                      GestureDetector(
+                        onTap: _openSettings,
+                        child: KraftPlaque(
+                          theme: t,
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.person,
+                                  size: 16, color: t.textSoft),
+                              const SizedBox(width: 6),
+                              Text(s.playerName,
+                                  style: Workshop.label(13, color: t.text)),
+                              const SizedBox(width: 4),
+                              Icon(Icons.edit,
+                                  size: 13,
+                                  color: t.textSoft
+                                      .withValues(alpha: 0.7)),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
                       OakButton(
+                        theme: t,
                         label: 'PLAY',
                         fontSize: 26,
-                        onTap: () => _play(daily: false),
+                        onTap: () => _play(GameMode.classic),
                       ),
                       const SizedBox(height: 14),
                       Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          _PlankButton(
-                            label: 'CLASSIC',
-                            onTap: () => _play(daily: false),
+                          PlankButton(
+                            theme: t,
+                            label: 'BLITZ',
+                            sub: '2-minute rush',
+                            onTap: () => _play(GameMode.blitz),
                           ),
                           const SizedBox(width: 12),
-                          _PlankButton(
+                          PlankButton(
+                            theme: t,
                             label: 'DAILY',
                             sub: 'challenge',
-                            onTap: () => _play(daily: true),
+                            onTap: () => _play(GameMode.daily),
                           ),
                         ],
                       ),
-                      const SizedBox(height: 22),
-                      // BEST score plaque with brass pin.
-                      KraftPlaque(
-                        tilt: 0.02,
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text('BEST  ',
-                                style: Workshop.label(13,
-                                    color: Workshop.burntUmber
-                                        .withValues(alpha: 0.75))),
-                            Text('${ScoreStore.I.bestClassic}',
-                                style: Workshop.digits(26)),
-                          ],
-                        ),
+                      const SizedBox(height: 14),
+                      PlankButton(
+                        theme: t,
+                        label: s.isPro ? 'PRO WORKSHOP ✓' : 'GO PRO',
+                        sub: s.isPro ? 'all unlocked' : 'free vs pro',
+                        wide: true,
+                        onTap: _openPro,
+                      ),
+                      const SizedBox(height: 20),
+                      // BEST score plaques.
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          KraftPlaque(
+                            theme: t,
+                            tilt: -0.02,
+                            child: Column(
+                              children: [
+                                Text('BEST',
+                                    style: Workshop.label(10,
+                                        color: t.textSoft)),
+                                Text('${s.bestClassic}',
+                                    style: Workshop.digits(22,
+                                        color: t.text)),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          KraftPlaque(
+                            theme: t,
+                            tilt: 0.02,
+                            child: Column(
+                              children: [
+                                Text('BLITZ BEST',
+                                    style: Workshop.label(10,
+                                        color: t.textSoft)),
+                                Text('${s.bestBlitz}',
+                                    style: Workshop.digits(22,
+                                        color: t.text)),
+                              ],
+                            ),
+                          ),
+                        ],
                       ),
                       const SizedBox(height: 40),
                     ],
                   ),
                 ),
               ),
-              // Round wooden settings knob, top-right.
               Positioned(
                 top: 8,
                 right: 16,
                 child: WoodKnob(
+                  theme: t,
                   icon: Icons.settings,
-                  onTap: () {
-                    Sound.I.click();
-                    Navigator.of(context)
-                        .push(MaterialPageRoute(
-                            builder: (_) => const SettingsScreen()))
-                        .then((_) => setState(() {}));
-                  },
+                  onTap: _openSettings,
                 ),
               ),
             ],
@@ -142,137 +257,48 @@ class _MenuScreenState extends State<MenuScreen> {
   }
 }
 
-class _TitlePlank extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 34, vertical: 18),
-      decoration: BoxDecoration(
-        color: Workshop.oakMid,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: Workshop.walnut, width: 4),
-        boxShadow: Workshop.restingShadow,
-      ),
-      child: Column(
-        children: [
-          Text('BLOCK FILL',
-              style: Workshop.burned(40), textAlign: TextAlign.center),
-          const SizedBox(height: 4),
-          Text('a carpenter\'s puzzle',
-              style: Workshop.body(15,
-                  color: Workshop.burntUmber.withValues(alpha: 0.8))),
-        ],
-      ),
-    );
-  }
-}
-
-/// Static oak polyomino arrangement (L-tetromino, 2x2 square, bar).
-class _MenuDressing extends StatelessWidget {
-  const _MenuDressing();
-
-  @override
-  Widget build(BuildContext context) {
-    const cell = 26.0;
-    TrayPiece piece(String art, int stain) =>
-        TrayPiece(_shapeFor(art), stain);
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      crossAxisAlignment: CrossAxisAlignment.end,
-      children: [
-        Transform.rotate(
-          angle: -0.08,
-          child: _dressedPiece(piece('#..\n###', 0), cell),
-        ),
-        const SizedBox(width: 14),
-        Transform.rotate(
-          angle: 0.05,
-          child: _dressedPiece(piece('##\n##', 2), cell),
-        ),
-        const SizedBox(width: 14),
-        Transform.rotate(
-          angle: 0.1,
-          child: _dressedPiece(piece('####', 1), cell),
-        ),
-      ],
-    );
-  }
-
-  Widget _dressedPiece(TrayPiece p, double cell) {
-    return Container(
-      decoration: const BoxDecoration(
-        boxShadow: [
-          BoxShadow(
-              color: Color(0x66000000), blurRadius: 8, offset: Offset(3, 6)),
-        ],
-      ),
-      child: PieceView(piece: p, cellSize: cell),
-    );
-  }
-}
-
-PieceShape _shapeFor(String art) {
-  final rows = art.split('\n');
-  final cells = <Point<int>>[];
-  var maxC = 0;
-  for (var r = 0; r < rows.length; r++) {
-    for (var c = 0; c < rows[r].length; c++) {
-      if (rows[r][c] == '#') {
-        cells.add(Point(c, r));
-        if (c > maxC) maxC = c;
-      }
-    }
-  }
-  return PieceShape(cells, maxC + 1, rows.length);
-}
-
-class _PlankButton extends StatefulWidget {
+class PlankButton extends StatelessWidget {
+  final WorkshopThemeDef theme;
   final String label;
-  final String? sub;
+  final String sub;
   final VoidCallback onTap;
-  const _PlankButton({required this.label, this.sub, required this.onTap});
-
-  @override
-  State<_PlankButton> createState() => _PlankButtonState();
-}
-
-class _PlankButtonState extends State<_PlankButton> {
-  bool _down = false;
+  final bool wide;
+  const PlankButton({
+    super.key,
+    required this.theme,
+    required this.label,
+    required this.sub,
+    required this.onTap,
+    this.wide = false,
+  });
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTapDown: (_) => setState(() => _down = true),
-      onTapUp: (_) {
-        setState(() => _down = false);
-        widget.onTap();
-      },
-      onTapCancel: () => setState(() => _down = false),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 90),
-        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
-        transform: Matrix4.translationValues(0, _down ? 2 : 0, 0),
+      onTap: onTap,
+      child: Container(
+        width: wide ? 232 : 110,
+        padding:
+            const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
         decoration: BoxDecoration(
-          color: Workshop.oakDark,
+          color: theme.blockMid,
           borderRadius: BorderRadius.circular(6),
-          border: Border.all(color: Workshop.walnut, width: 2.5),
-          boxShadow: _down
-              ? const [
-                  BoxShadow(
-                      color: Color(0x40000000),
-                      blurRadius: 2,
-                      offset: Offset(1, 1)),
-                ]
-              : Workshop.restingShadow,
+          border: Border(
+            top: BorderSide(color: theme.blockLight, width: 2),
+            left: BorderSide(color: theme.blockLight, width: 2),
+            bottom: BorderSide(color: theme.blockDark, width: 4),
+            right: BorderSide(color: theme.blockDark, width: 4),
+          ),
+          boxShadow: Workshop.restingShadow,
         ),
         child: Column(
           children: [
-            Text(widget.label,
-                style: Workshop.burned(17, color: Workshop.sawdust)),
-            if (widget.sub != null)
-              Text(widget.sub!,
-                  style: Workshop.body(11,
-                      color: Workshop.sawdust.withValues(alpha: 0.8))),
+            Text(label,
+                style: Workshop.burned(17, color: theme.text),
+                textAlign: TextAlign.center),
+            Text(sub,
+                style: Workshop.label(9, color: theme.textSoft),
+                textAlign: TextAlign.center),
           ],
         ),
       ),
@@ -280,11 +306,14 @@ class _PlankButtonState extends State<_PlankButton> {
   }
 }
 
-class _WorkshopDialog extends StatelessWidget {
+class WorkshopDialog extends StatelessWidget {
+  final WorkshopThemeDef theme;
   final String title;
   final String body;
   final List<Widget> actions;
-  const _WorkshopDialog({
+  const WorkshopDialog({
+    super.key,
+    required this.theme,
     required this.title,
     required this.body,
     required this.actions,
@@ -295,18 +324,23 @@ class _WorkshopDialog extends StatelessWidget {
     return Dialog(
       backgroundColor: Colors.transparent,
       child: KraftPlaque(
-        padding: const EdgeInsets.fromLTRB(24, 28, 24, 16),
+        theme: theme,
+        padding: const EdgeInsets.fromLTRB(22, 26, 22, 14),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(title, style: Workshop.burned(22), textAlign: TextAlign.center),
-            const SizedBox(height: 10),
+            Text(title,
+                style: Workshop.burned(20, color: theme.text),
+                textAlign: TextAlign.center),
+            const SizedBox(height: 8),
             Text(body,
-                style: Workshop.body(15), textAlign: TextAlign.center),
+                style: Workshop.body(14, color: theme.textSoft),
+                textAlign: TextAlign.center),
             const SizedBox(height: 8),
             Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: actions),
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: actions,
+            ),
           ],
         ),
       ),

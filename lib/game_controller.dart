@@ -1,16 +1,26 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'audio.dart';
 import 'engine.dart';
-import 'scores.dart';
+import 'services/audio_service.dart';
+import 'services/settings_service.dart';
+import 'theme/workshop_themes.dart';
 
 /// UI-facing state for a Block Fill session. Wraps [BlockFillEngine] with
-/// selection, drag, ghost preview, clear animations, pause, and game over.
+/// selection, drag, ghost preview, clear animations, particles, pause, modes,
+/// and game over.
+///
+/// Watchdog (exemplar pattern): a 1-second timer owns the blitz countdown
+/// via [BlockFillEngine.tick], validates engine invariants, and recovers a
+/// placement op that stays unresolved too long. The engine owns ALL game
+/// state; this class only mirrors it for the UI. Stuck states are impossible
+/// by construction: [tryPlace] always settles in try/finally.
 class GameController extends ChangeNotifier {
   late BlockFillEngine engine;
-  final bool daily;
+  final GameMode mode;
   final String? dailyDate;
+  final WorkshopAudio audio;
+  final BlockFillSettings settings;
 
   int selected = -1;
 
@@ -23,9 +33,17 @@ class GameController extends ChangeNotifier {
   Set<int> ghostCells = {};
   Set<int> aboutToClear = {};
 
-  // Sweep animation: cleared cells with their stains.
+  // Sweep animation: cleared cells with their block-style indices.
   Map<int, int> sweepAnim = {};
   int sweepId = 0;
+
+  // Sawdust particle burst on clear: cells + style per cell.
+  Map<int, int> burstCells = {};
+  int burstId = 0;
+
+  // Combo celebration overlay.
+  int celebrateCombo = 0;
+  int celebrateId = 0;
 
   // Floating score popup.
   String? popupText;
@@ -33,21 +51,36 @@ class GameController extends ChangeNotifier {
 
   bool paused = false;
   bool gameOver = false;
+  bool gameOverByTimeout = false;
   bool newBest = false;
   bool resolving = false;
+  DateTime? _resolveStart;
 
   String hintMsg = 'Pick up a block, set it on the bench';
   Hint? hint;
   bool levelUpFlash = false;
 
   Timer? _popupTimer;
+  Timer? _watchdog;
+  int _lastTickSecond = -1;
+  bool _disposed = false;
 
-  GameController({this.daily = false, this.dailyDate}) {
+  GameController({
+    required this.mode,
+    required this.audio,
+    required this.settings,
+    this.dailyDate,
+  }) {
     engine = BlockFillEngine(
-        seed: daily && dailyDate != null
-            ? BlockFillEngine.dailySeed(_parseDate(dailyDate!))
-            : null);
+      seed: mode == GameMode.daily && dailyDate != null
+          ? BlockFillEngine.dailySeed(_parseDate(dailyDate!))
+          : null,
+      mode: mode,
+      stainCount: BlockStyles.all.length,
+    );
     newGame();
+    // Watchdog: blitz countdown, invariant validation, stuck-op recovery.
+    _watchdog = Timer.periodic(const Duration(seconds: 1), (_) => _watch());
   }
 
   static DateTime _parseDate(String d) {
@@ -56,9 +89,27 @@ class GameController extends ChangeNotifier {
   }
 
   int get score => engine.score;
-  int get best => daily
-      ? ScoreStore.I.dailyBestFor(dailyDate ?? '')
-      : ScoreStore.I.bestClassic;
+  int get best {
+    switch (mode) {
+      case GameMode.blitz:
+        return settings.bestBlitz;
+      case GameMode.daily:
+        return settings.dailyBestFor(dailyDate ?? '');
+      case GameMode.classic:
+        return settings.bestClassic;
+    }
+  }
+
+  String get modeLabel {
+    switch (mode) {
+      case GameMode.blitz:
+        return 'BLITZ';
+      case GameMode.daily:
+        return 'DAILY';
+      case GameMode.classic:
+        return 'CLASSIC';
+    }
+  }
 
   void newGame() {
     engine.reset();
@@ -67,15 +118,71 @@ class GameController extends ChangeNotifier {
     ghostCells = {};
     aboutToClear = {};
     sweepAnim = {};
+    burstCells = {};
+    celebrateCombo = 0;
     popupText = null;
     paused = false;
     gameOver = false;
+    gameOverByTimeout = false;
     newBest = false;
     resolving = false;
+    _resolveStart = null;
     hint = null;
-    hintMsg = 'Pick up a block, set it on the bench';
+    _lastTickSecond = -1;
+    hintMsg = mode == GameMode.blitz
+        ? '120 seconds on the clock — fill fast!'
+        : 'Pick up a block, set it on the bench';
     notifyListeners();
-    Sound.I.gameStart();
+    audio.gameStart();
+  }
+
+  /// 1-second watchdog: engine-owned blitz countdown, invariant validation,
+  /// stuck-placement recovery, and low-time tick sounds.
+  void _watch() {
+    if (_disposed || gameOver || paused) return;
+    var changed = false;
+
+    // Blitz countdown lives in the engine.
+    if (mode == GameMode.blitz) {
+      final before = engine.timeLeftMs;
+      engine.tick(1000);
+      if (engine.timeLeftMs != before) changed = true;
+      final secs = (engine.timeLeftMs / 1000).ceil();
+      if (secs != _lastTickSecond) {
+        _lastTickSecond = secs;
+        if (secs <= 10 && secs > 0) audio.tick();
+        changed = true;
+      }
+      if (engine.timedOut && !gameOver) {
+        gameOverByTimeout = true;
+        _finishGame();
+        return;
+      }
+    }
+
+    // Invariant validation: heal by ending cleanly if the engine ever
+    // reports a broken state (should never happen; belt and suspenders).
+    final problem = engine.validate();
+    if (problem != null) {
+      debugPrint('BlockFill watchdog: engine invariant broken: $problem');
+      if (!gameOver) {
+        _finishGame();
+        return;
+      }
+    }
+
+    // Stuck-placement recovery: a placement op must settle in seconds.
+    if (resolving && _resolveStart != null) {
+      if (DateTime.now().difference(_resolveStart!).inSeconds > 8) {
+        debugPrint('BlockFill watchdog: recovering stuck placement op');
+        resolving = false;
+        _resolveStart = null;
+        cancelDrag();
+        changed = true;
+      }
+    }
+
+    if (changed) notifyListeners();
   }
 
   void setHint(String m) {
@@ -84,7 +191,7 @@ class GameController extends ChangeNotifier {
   }
 
   void _bump() {
-    if (ScoreStore.I.hapticsOn) {
+    if (settings.hapticsOn) {
       HapticFeedback.lightImpact();
     }
   }
@@ -95,7 +202,7 @@ class GameController extends ChangeNotifier {
     if (gameOver || paused || resolving) return;
     if (engine.tray[i] == null) return;
     _bump();
-    Sound.I.click();
+    audio.click();
     selected = (selected == i) ? -1 : i;
     hint = null;
     notifyListeners();
@@ -106,7 +213,7 @@ class GameController extends ChangeNotifier {
     final t = selected >= 0 ? engine.tray[selected] : null;
     if (t == null) return;
     _bump();
-    Sound.I.rotate();
+    audio.rotate();
     t.rotate();
     _updateGhost(dragR, dragC);
     notifyListeners();
@@ -194,67 +301,82 @@ class GameController extends ChangeNotifier {
     final t = selected >= 0 ? engine.tray[selected] : null;
     if (t == null) return;
     if (!engine.canPlace(t.shape, r, c)) {
-      Sound.I.invalid();
+      audio.invalid();
       _bump();
       hintMsg = 'It won\'t fit there — try another spot';
       notifyListeners();
       return;
     }
     resolving = true;
+    _resolveStart = DateTime.now();
     final placedIndex = selected;
     selected = -1;
     dragging = false;
     ghostCells = {};
     aboutToClear = {};
     hint = null;
+    final prevLevel = engine.level; // read BEFORE place (level-up detection)
 
-    final res = engine.place(placedIndex, r, c);
-    final prevLevel = engine.level;
-    notifyListeners();
-
-    _bump();
-    await Sound.I.place();
-
-    if (res.lines > 0) {
-      // Sweep animation: show the cleared blocks briefly, then they vanish.
-      sweepAnim = Map<int, int>.from(res.clearedStains);
-      sweepId++;
+    try {
+      final res = engine.place(placedIndex, r, c);
       notifyListeners();
-      await Sound.I.clear();
-      if (res.combo >= 2) {
-        await Sound.I.combo();
-        _popup('COMBO ×${res.combo}  +${res.clearBonus}');
-      } else if (res.lines > 1) {
-        _popup('${res.lines} LINES  +${res.clearBonus}');
+
+      _bump();
+      await audio.place();
+
+      if (res.lines > 0) {
+        // Sweep animation + sawdust particle burst + sounds.
+        sweepAnim = Map<int, int>.from(res.clearedStains);
+        sweepId++;
+        burstCells = Map<int, int>.from(res.clearedStains);
+        burstId++;
+        notifyListeners();
+        await audio.clear();
+        if (res.combo >= 2) {
+          await audio.combo();
+          celebrateCombo = res.combo;
+          celebrateId++;
+          _popup('COMBO ×${res.combo}  +${res.clearBonus}');
+        } else if (res.lines > 1) {
+          _popup('${res.lines} LINES  +${res.clearBonus}');
+        } else {
+          _popup('+${res.clearBonus}');
+        }
+        hintMsg = res.combo >= 2
+            ? 'Beautiful joinery! Combo ×${res.combo}'
+            : 'Clean sweep! +${res.clearBonus}';
+        await Future<void>.delayed(const Duration(milliseconds: 420));
+        sweepAnim = {};
+        notifyListeners();
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+        burstCells = {};
+        celebrateCombo = 0;
+        notifyListeners();
       } else {
-        _popup('+${res.clearBonus}');
+        hintMsg = _encouragements[engine.piecesPlaced % _encouragements.length];
+        notifyListeners();
       }
-      hintMsg = res.combo >= 2
-          ? 'Beautiful joinery! Combo ×${res.combo}'
-          : 'Clean sweep! +${res.clearBonus}';
-      await Future<void>.delayed(const Duration(milliseconds: 420));
-      sweepAnim = {};
-      notifyListeners();
-    } else {
-      hintMsg = _encouragements[engine.piecesPlaced % _encouragements.length];
-      notifyListeners();
+
+      if (engine.level > prevLevel) {
+        levelUpFlash = true;
+        notifyListeners();
+        _popup('CRAFTSMAN LEVEL ${engine.level}');
+        await Future<void>.delayed(const Duration(milliseconds: 900));
+        levelUpFlash = false;
+        notifyListeners();
+      }
+
+      if (engine.trayEmpty && !engine.isGameOver) {
+        engine.dealTray();
+        notifyListeners();
+      }
+    } finally {
+      // Always settle: the watchdog also enforces this, but try/finally
+      // guarantees no stuck state even if audio or timers throw.
+      resolving = false;
+      _resolveStart = null;
     }
 
-    if (engine.level > prevLevel) {
-      levelUpFlash = true;
-      notifyListeners();
-      _popup('CRAFTSMAN LEVEL ${engine.level}');
-      await Future<void>.delayed(const Duration(milliseconds: 900));
-      levelUpFlash = false;
-      notifyListeners();
-    }
-
-    if (engine.trayEmpty && !engine.isGameOver) {
-      engine.dealTray();
-      notifyListeners();
-    }
-
-    resolving = false;
     if (engine.isGameOver) {
       await _finishGame();
     } else {
@@ -263,17 +385,24 @@ class GameController extends ChangeNotifier {
   }
 
   Future<void> _finishGame() async {
+    if (gameOver) return;
     gameOver = true;
-    if (daily && dailyDate != null) {
-      newBest = await ScoreStore.I.recordDaily(dailyDate!, engine.score);
-    } else {
-      newBest = await ScoreStore.I.recordClassic(engine.score);
+    switch (mode) {
+      case GameMode.blitz:
+        newBest = await settings.recordBlitz(engine.score);
+        break;
+      case GameMode.daily:
+        newBest = await settings.recordDaily(dailyDate ?? '', engine.score);
+        break;
+      case GameMode.classic:
+        newBest = await settings.recordClassic(engine.score);
+        break;
     }
     notifyListeners();
     if (newBest) {
-      await Sound.I.newBest();
+      await audio.newBest();
     } else {
-      await Sound.I.gameOver();
+      await audio.gameOver();
     }
   }
 
@@ -283,6 +412,7 @@ class GameController extends ChangeNotifier {
     notifyListeners();
     _popupTimer?.cancel();
     _popupTimer = Timer(const Duration(milliseconds: 1100), () {
+      if (_disposed) return;
       popupText = null;
       notifyListeners();
     });
@@ -294,7 +424,7 @@ class GameController extends ChangeNotifier {
     if (gameOver || paused || resolving) return;
     final h = engine.findHint();
     if (h == null) return;
-    Sound.I.hint();
+    audio.hint();
     _bump();
     hint = h;
     selected = h.trayIndex;
@@ -322,6 +452,8 @@ class GameController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
+    _watchdog?.cancel();
     _popupTimer?.cancel();
     super.dispose();
   }

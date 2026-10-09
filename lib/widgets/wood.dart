@@ -2,38 +2,69 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import '../design.dart';
 import '../engine.dart';
+import '../theme/workshop_themes.dart';
 
 /// Carpenter's workshop widget kit: skeuomorphic painters and tactile
 /// controls. Lamp light comes from the top-left everywhere.
+/// Every widget takes the active [WorkshopThemeDef] so the 14 themes,
+/// 12 block styles and 6 board accents all restyle the game.
+
+/// Block material for a style index, honoring color-blind mode.
+BlockStyleDef styleFor(int i, bool colorBlind) {
+  if (!colorBlind) return BlockStyles.byIndex(i);
+  final c = BlockStyles
+      .colorBlind[i.clamp(0, BlockStyles.colorBlind.length - 1)];
+  return BlockStyleDef(
+    name: 'Safe',
+    light: _mix(c, const Color(0xFFFFFFFF), 0.35),
+    mid: c,
+    dark: _mix(c, const Color(0xFF000000), 0.35),
+  );
+}
+
+Color _mix(Color a, Color b, double t) => Color.fromARGB(
+      0xFF,
+      ((a.r * 255.0) + ((b.r - a.r) * 255.0) * t).round().clamp(0, 255),
+      ((a.g * 255.0) + ((b.g - a.g) * 255.0) * t).round().clamp(0, 255),
+      ((a.b * 255.0) + ((b.b - a.b) * 255.0) * t).round().clamp(0, 255),
+    );
 
 // ---------------------------------------------------------------------------
-// Workbench background: scarred oak bench, grain, saw marks, sawdust flecks,
+// Workbench background: scarred bench, grain, saw marks, sawdust flecks,
 // and a soft warm wash from the top-left lamp.
 // ---------------------------------------------------------------------------
 class WorkbenchBackground extends StatelessWidget {
   final Widget child;
-  const WorkbenchBackground({super.key, required this.child});
+  final WorkshopThemeDef? theme;
+  const WorkbenchBackground({
+    super.key,
+    required this.child,
+    this.theme,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final t = theme ?? WorkshopThemes.all[0];
     return CustomPaint(
-      painter: _WorkbenchPainter(),
+      painter: _WorkbenchPainter(t),
       child: child,
     );
   }
 }
 
 class _WorkbenchPainter extends CustomPainter {
+  final WorkshopThemeDef t;
   final Random _r = Random(77);
+  _WorkbenchPainter(this.t);
 
   @override
   void paint(Canvas canvas, Size size) {
-    final bg = Paint()..color = Workshop.workbench;
+    final bg = Paint()..color = t.bench;
     canvas.drawRect(Offset.zero & size, bg);
 
     // Plank seams (horizontal boards).
     final seam = Paint()
-      ..color = Workshop.walnut.withValues(alpha: 0.35)
+      ..color = t.benchDeep.withValues(alpha: 0.55)
       ..strokeWidth = 2;
     final rows = (size.height / 220).ceil();
     for (var i = 1; i < rows; i++) {
@@ -43,7 +74,7 @@ class _WorkbenchPainter extends CustomPainter {
 
     // Wood grain: long wavy darker streaks.
     final grain = Paint()
-      ..color = Workshop.walnut.withValues(alpha: 0.16)
+      ..color = t.benchDeep.withValues(alpha: 0.35)
       ..strokeWidth = 1.6
       ..style = PaintingStyle.stroke;
     for (var i = 0; i < 46; i++) {
@@ -58,7 +89,7 @@ class _WorkbenchPainter extends CustomPainter {
 
     // Saw marks: short diagonal scars.
     final scar = Paint()
-      ..color = Workshop.burntUmber.withValues(alpha: 0.22)
+      ..color = t.text.withValues(alpha: 0.22)
       ..strokeWidth = 2.2
       ..strokeCap = StrokeCap.round;
     for (var i = 0; i < 26; i++) {
@@ -71,7 +102,7 @@ class _WorkbenchPainter extends CustomPainter {
     }
 
     // Sawdust flecks.
-    final dust = Paint()..color = Workshop.sawdust.withValues(alpha: 0.5);
+    final dust = Paint()..color = t.accentLight.withValues(alpha: 0.5);
     for (var i = 0; i < 120; i++) {
       final x = _r.nextDouble() * size.width;
       final y = _r.nextDouble() * size.height;
@@ -84,8 +115,8 @@ class _WorkbenchPainter extends CustomPainter {
         center: const Alignment(-1.1, -1.1),
         radius: 1.4,
         colors: [
-          Workshop.lampAmber.withValues(alpha: 0.20),
-          Workshop.lampAmber.withValues(alpha: 0.0),
+          t.lampAmber.withValues(alpha: 0.20),
+          t.lampAmber.withValues(alpha: 0.0),
         ],
       ).createShader(Offset.zero & size);
     canvas.drawRect(Offset.zero & size, lamp);
@@ -96,22 +127,24 @@ class _WorkbenchPainter extends CustomPainter {
 }
 
 // ---------------------------------------------------------------------------
-// Oak piece painter: draws a whole polyomino with wood grain, silhouette
-// bevels (light top/left, dark bottom/right) and dovetail edge notches.
+// Piece painter: draws a whole polyomino with grain, silhouette bevels
+// (light top/left, dark bottom/right) and dovetail edge notches.
 // ---------------------------------------------------------------------------
 class PiecePainter extends CustomPainter {
   final PieceShape shape;
-  final Color stain;
+  final BlockStyleDef style;
   final double cell;
   final bool ghost;
   final int knotIndex; // which cell gets the branded knot (-1 = none)
+  final Color ghostTint;
 
   PiecePainter({
     required this.shape,
-    required this.stain,
+    required this.style,
     required this.cell,
     this.ghost = false,
     this.knotIndex = -1,
+    this.ghostTint = const Color(0xFFF2B950),
   });
 
   @override
@@ -123,7 +156,7 @@ class PiecePainter extends CustomPainter {
     bool has(int x, int y) => occ['$x,$y'] == true;
 
     final body = Paint()
-      ..color = ghost ? stain.withValues(alpha: 0.55) : stain;
+      ..color = ghost ? style.mid.withValues(alpha: 0.55) : style.mid;
     final rnd = Random(shape.cells.length * 131 + shape.w * 17 + shape.h * 7);
 
     // Cell bodies.
@@ -132,9 +165,9 @@ class PiecePainter extends CustomPainter {
       canvas.drawRect(r, body);
     }
 
-    // Vertical wood grain streaks across the piece.
+    // Wood grain streaks across the piece.
     final grainPaint = Paint()
-      ..color = Workshop.walnut.withValues(alpha: ghost ? 0.12 : 0.28)
+      ..color = style.dark.withValues(alpha: ghost ? 0.15 : 0.35)
       ..strokeWidth = max(1.0, cell * 0.045)
       ..style = PaintingStyle.stroke;
     for (var cx = 0; cx < shape.w; cx++) {
@@ -160,12 +193,12 @@ class PiecePainter extends CustomPainter {
     }
 
     if (!ghost) {
-      // Silhouette bevels: oak-light top/left, walnut bottom/right.
+      // Silhouette bevels: light top/left, dark bottom/right (lamp top-left).
       final hi = Paint()
-        ..color = Workshop.oakLight.withValues(alpha: 0.9)
+        ..color = style.light.withValues(alpha: 0.9)
         ..strokeWidth = max(1.2, cell * 0.05);
       final lo = Paint()
-        ..color = Workshop.walnut.withValues(alpha: 0.85)
+        ..color = style.dark.withValues(alpha: 0.85)
         ..strokeWidth = max(1.2, cell * 0.05);
       for (final p in shape.cells) {
         final x = p.x * cell, y = p.y * cell;
@@ -186,7 +219,7 @@ class PiecePainter extends CustomPainter {
       }
 
       // Dovetail joint notches along silhouette edges.
-      final dove = Paint()..color = Workshop.oakDark.withValues(alpha: 0.85);
+      final dove = Paint()..color = style.dark.withValues(alpha: 0.85);
       for (final p in shape.cells) {
         final x = p.x * cell, y = p.y * cell;
         final s = cell * 0.22;
@@ -205,15 +238,18 @@ class PiecePainter extends CustomPainter {
         final p = shape.cells[knotIndex];
         final cx = p.x * cell + cell / 2;
         final cy = p.y * cell + cell / 2;
-        final knot = Paint()..color = Workshop.walnut.withValues(alpha: 0.55);
+        final knot = Paint()..color = style.dark.withValues(alpha: 0.55);
         canvas.drawOval(
-            Rect.fromCenter(center: Offset(cx, cy), width: cell * 0.22, height: cell * 0.16),
+            Rect.fromCenter(
+                center: Offset(cx, cy),
+                width: cell * 0.22,
+                height: cell * 0.16),
             knot);
       }
     } else {
       // Ghost: warm amber outline instead of bevels.
       final edge = Paint()
-        ..color = Workshop.lampAmber.withValues(alpha: 0.8)
+        ..color = ghostTint.withValues(alpha: 0.8)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 2;
       for (final p in shape.cells) {
@@ -225,7 +261,6 @@ class PiecePainter extends CustomPainter {
   }
 
   void _dovetail(Canvas c, Paint p, double x, double y, double s, int dir) {
-    // Small trapezoid notch pointing inward (dir: 0 top,1 bottom,2 left,3 right).
     final path = Path();
     if (dir == 0) {
       path
@@ -261,41 +296,45 @@ class PiecePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant PiecePainter old) =>
-      old.shape != shape || old.stain != stain || old.ghost != ghost;
+      old.shape != shape ||
+      old.style != style ||
+      old.ghost != ghost;
 }
 
-/// Renders a [TrayPiece] at a size that fits within [maxSize].
+/// Renders a [TrayPiece] with a block material style.
 class PieceView extends StatelessWidget {
   final TrayPiece piece;
-  final double maxSize;
   final double cellSize;
+  final BlockStyleDef style;
   final bool ghost;
   final bool lifted;
+  final Color ghostTint;
 
   const PieceView({
     super.key,
     required this.piece,
     required this.cellSize,
-    this.maxSize = 120,
+    required this.style,
     this.ghost = false,
     this.lifted = false,
+    this.ghostTint = const Color(0xFFF2B950),
   });
 
   @override
   Widget build(BuildContext context) {
     final w = piece.shape.w * cellSize;
     final h = piece.shape.h * cellSize;
-    return Container(
+    return SizedBox(
       width: w,
       height: h,
-      decoration: lifted ? null : const BoxDecoration(),
       child: CustomPaint(
         size: Size(w, h),
         painter: PiecePainter(
           shape: piece.shape,
-          stain: _stainColor(piece.stain),
+          style: style,
           cell: cellSize,
           ghost: ghost,
+          ghostTint: ghostTint,
           knotIndex: piece.shape.cells.length ~/ 2,
         ),
       ),
@@ -303,66 +342,60 @@ class PieceView extends StatelessWidget {
   }
 }
 
-Color _stainColor(int i) =>
-    Workshop.stains[i.clamp(0, Workshop.stains.length - 1)];
-
-Color stainColor(int i, bool colorBlind) {
-  final list = colorBlind ? Workshop.stainBlind : Workshop.stains;
-  return list[i.clamp(0, list.length - 1)];
-}
-
 // ---------------------------------------------------------------------------
-// Mortise cell: recessed routed cavity in the walnut tray.
+// Mortise cell: recessed routed cavity in the tray.
 // ---------------------------------------------------------------------------
 class MortiseCell extends StatelessWidget {
   final double size;
   final bool warm; // about-to-clear warmth
-  const MortiseCell({super.key, required this.size, this.warm = false});
+  final WorkshopThemeDef? theme;
+  const MortiseCell({
+    super.key,
+    required this.size,
+    this.warm = false,
+    this.theme,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final t = theme ?? WorkshopThemes.all[0];
     return CustomPaint(
       size: Size(size, size),
-      painter: _MortisePainter(warm: warm),
+      painter: _MortisePainter(warm: warm, t: t),
     );
   }
 }
 
 class _MortisePainter extends CustomPainter {
   final bool warm;
-  _MortisePainter({required this.warm});
+  final WorkshopThemeDef t;
+  _MortisePainter({required this.warm, required this.t});
 
   @override
   void paint(Canvas canvas, Size size) {
     final r = RRect.fromRectAndRadius(
         Offset.zero & size, Radius.circular(size.width * 0.14));
-    // Cavity base.
-    canvas.drawRRect(
-        r, Paint()..color = const Color(0xFF33200F));
-    // Deep inner shadow top/left.
+    canvas.drawRRect(r, Paint()..color = t.trayInset);
     canvas.drawRRect(
         r,
         Paint()
           ..color = Colors.black.withValues(alpha: 0.45)
           ..maskFilter = const MaskFilter.blur(BlurStyle.inner, 3));
-    // Crisp warm highlight line along bottom/right (lamp catch).
     final hi = Paint()
-      ..color = (warm
-              ? Workshop.lampAmber
-              : Workshop.lampAmber.withValues(alpha: 0.28))
+      ..color = (warm ? t.lampAmber : t.lampAmber.withValues(alpha: 0.28))
       ..strokeWidth = warm ? 2.4 : 1.4;
     final w = size.width, h = size.height;
     canvas.drawLine(Offset(2, h - 1.4), Offset(w - 2, h - 1.4), hi);
     canvas.drawLine(Offset(w - 1.4, 2), Offset(w - 1.4, h - 2), hi);
     if (warm) {
-      // Sawdust-mote warmth wash.
       canvas.drawRRect(
-          r, Paint()..color = Workshop.lampAmber.withValues(alpha: 0.22));
+          r, Paint()..color = t.lampAmber.withValues(alpha: 0.22));
     }
   }
 
   @override
-  bool shouldRepaint(covariant _MortisePainter old) => old.warm != warm;
+  bool shouldRepaint(covariant _MortisePainter old) =>
+      old.warm != warm || old.t != t;
 }
 
 // ---------------------------------------------------------------------------
@@ -372,30 +405,32 @@ class KraftPlaque extends StatelessWidget {
   final Widget child;
   final double tilt;
   final EdgeInsets padding;
+  final WorkshopThemeDef? theme;
   const KraftPlaque({
     super.key,
     required this.child,
     this.tilt = 0,
     this.padding = const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+    this.theme,
   });
 
   @override
   Widget build(BuildContext context) {
+    final t = theme ?? WorkshopThemes.all[0];
     return Transform.rotate(
       angle: tilt,
       child: Container(
         padding: padding,
         decoration: BoxDecoration(
-          color: Workshop.kraft,
+          color: t.kraft,
           borderRadius: BorderRadius.circular(4),
-          border: Border.all(color: Workshop.kraftDark, width: 1),
+          border: Border.all(color: t.kraftDark, width: 1),
           boxShadow: Workshop.restingShadow,
         ),
         child: Stack(
           clipBehavior: Clip.none,
           children: [
             child,
-            // Brass pin.
             Positioned(
               top: -9,
               left: 0,
@@ -406,8 +441,8 @@ class KraftPlaque extends StatelessWidget {
                   height: 12,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    color: Workshop.brass,
-                    border: Border.all(color: Workshop.walnut, width: 1.5),
+                    color: t.accent,
+                    border: Border.all(color: t.trayFrame, width: 1.5),
                     boxShadow: const [
                       BoxShadow(
                           color: Color(0x66000000),
@@ -426,7 +461,7 @@ class KraftPlaque extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-// Oak block button: thick beveled oak, carved label, sinks 2px on press.
+// Oak block button: thick beveled block, carved label, sinks 2px on press.
 // ---------------------------------------------------------------------------
 class OakButton extends StatefulWidget {
   final String label;
@@ -434,6 +469,7 @@ class OakButton extends StatefulWidget {
   final Color? color;
   final double fontSize;
   final double width;
+  final WorkshopThemeDef? theme;
   const OakButton({
     super.key,
     required this.label,
@@ -441,6 +477,7 @@ class OakButton extends StatefulWidget {
     this.color,
     this.fontSize = 22,
     this.width = 220,
+    this.theme,
   });
 
   @override
@@ -452,7 +489,8 @@ class _OakButtonState extends State<OakButton> {
 
   @override
   Widget build(BuildContext context) {
-    final c = widget.color ?? Workshop.oakMid;
+    final t = widget.theme ?? WorkshopThemes.all[0];
+    final c = widget.color ?? t.blockMid;
     return GestureDetector(
       onTapDown: (_) => setState(() => _down = true),
       onTapUp: (_) {
@@ -469,10 +507,10 @@ class _OakButtonState extends State<OakButton> {
           color: c,
           borderRadius: BorderRadius.circular(8),
           border: Border(
-            top: BorderSide(color: Workshop.oakLight, width: _down ? 1 : 2),
-            left: BorderSide(color: Workshop.oakLight, width: _down ? 1 : 2),
-            bottom: BorderSide(color: Workshop.walnut, width: _down ? 2 : 4),
-            right: BorderSide(color: Workshop.walnut, width: _down ? 2 : 4),
+            top: BorderSide(color: t.blockLight, width: _down ? 1 : 2),
+            left: BorderSide(color: t.blockLight, width: _down ? 1 : 2),
+            bottom: BorderSide(color: t.blockDark, width: _down ? 2 : 4),
+            right: BorderSide(color: t.blockDark, width: _down ? 2 : 4),
           ),
           boxShadow: _down
               ? const [
@@ -486,7 +524,7 @@ class _OakButtonState extends State<OakButton> {
         alignment: Alignment.center,
         child: Text(
           widget.label,
-          style: Workshop.burned(widget.fontSize),
+          style: Workshop.burned(widget.fontSize, color: t.text),
         ),
       ),
     );
@@ -501,12 +539,14 @@ class WoodKnob extends StatefulWidget {
   final VoidCallback onTap;
   final double size;
   final Color? iconColor;
+  final WorkshopThemeDef? theme;
   const WoodKnob({
     super.key,
     required this.icon,
     required this.onTap,
     this.size = 52,
     this.iconColor,
+    this.theme,
   });
 
   @override
@@ -518,6 +558,7 @@ class _WoodKnobState extends State<WoodKnob> {
 
   @override
   Widget build(BuildContext context) {
+    final t = widget.theme ?? WorkshopThemes.all[0];
     return GestureDetector(
       onTapDown: (_) => setState(() => _down = true),
       onTapUp: (_) {
@@ -532,8 +573,8 @@ class _WoodKnobState extends State<WoodKnob> {
         transform: Matrix4.translationValues(0, _down ? 2 : 0, 0),
         decoration: BoxDecoration(
           shape: BoxShape.circle,
-          color: Workshop.oakMid,
-          border: Border.all(color: Workshop.walnut, width: 3),
+          color: t.blockMid,
+          border: Border.all(color: t.trayFrame, width: 3),
           boxShadow: _down
               ? const [
                   BoxShadow(
@@ -544,10 +585,9 @@ class _WoodKnobState extends State<WoodKnob> {
               : Workshop.restingShadow,
         ),
         child: CustomPaint(
-          painter: _KnobGrainPainter(),
+          painter: _KnobGrainPainter(t),
           child: Icon(widget.icon,
-              color: widget.iconColor ?? Workshop.burntUmber,
-              size: widget.size * 0.44),
+              color: widget.iconColor ?? t.text, size: widget.size * 0.44),
         ),
       ),
     );
@@ -555,25 +595,26 @@ class _WoodKnobState extends State<WoodKnob> {
 }
 
 class _KnobGrainPainter extends CustomPainter {
+  final WorkshopThemeDef t;
+  _KnobGrainPainter(this.t);
   @override
   void paint(Canvas canvas, Size size) {
     final c = size.center(Offset.zero);
     final r = size.width / 2;
-    // Turned-wood rings.
     final ring = Paint()
-      ..color = Workshop.walnut.withValues(alpha: 0.25)
+      ..color = t.blockDark.withValues(alpha: 0.4)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.4;
     for (var i = 1; i <= 3; i++) {
       canvas.drawCircle(c, r * i / 4.2, ring);
     }
-    // Top-left lamp highlight arc.
     final hi = Paint()
-      ..color = Workshop.oakLight.withValues(alpha: 0.8)
+      ..color = t.blockLight.withValues(alpha: 0.8)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 3
       ..strokeCap = StrokeCap.round;
-    canvas.drawArc(Rect.fromCircle(center: c, radius: r - 5), pi * 1.05, pi * 0.6, false, hi);
+    canvas.drawArc(
+        Rect.fromCircle(center: c, radius: r - 5), pi * 1.05, pi * 0.6, false, hi);
   }
 
   @override
@@ -586,45 +627,48 @@ class _KnobGrainPainter extends CustomPainter {
 class BoltLatch extends StatelessWidget {
   final bool value;
   final ValueChanged<bool> onChanged;
-  const BoltLatch({super.key, required this.value, required this.onChanged});
+  final WorkshopThemeDef? theme;
+  const BoltLatch({
+    super.key,
+    required this.value,
+    required this.onChanged,
+    this.theme,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final t = theme ?? WorkshopThemes.all[0];
     return GestureDetector(
       onTap: () => onChanged(!value),
       child: Container(
         width: 74,
         height: 36,
         decoration: BoxDecoration(
-          color: const Color(0xFF33200F),
+          color: t.trayInset,
           borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: Workshop.walnut, width: 2),
+          border: Border.all(color: t.trayFrame, width: 2),
           boxShadow: Workshop.insetShadow,
         ),
-        child: Stack(
-          children: [
-            AnimatedAlign(
-              duration: const Duration(milliseconds: 180),
-              curve: Curves.easeOutBack,
-              alignment: value ? Alignment.centerRight : Alignment.centerLeft,
-              child: Container(
-                width: 30,
-                height: 30,
-                margin: const EdgeInsets.all(3),
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: value ? Workshop.brass : Workshop.oakDark,
-                  border: Border.all(color: Workshop.walnut, width: 2),
-                  boxShadow: Workshop.restingShadow,
-                ),
-                child: Icon(
-                  value ? Icons.check : Icons.close,
-                  size: 16,
-                  color: Workshop.burntUmber,
-                ),
-              ),
+        child: AnimatedAlign(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOutBack,
+          alignment: value ? Alignment.centerRight : Alignment.centerLeft,
+          child: Container(
+            width: 30,
+            height: 30,
+            margin: const EdgeInsets.all(3),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: value ? t.accent : t.blockDark,
+              border: Border.all(color: t.trayFrame, width: 2),
+              boxShadow: Workshop.restingShadow,
             ),
-          ],
+            child: Icon(
+              value ? Icons.check : Icons.close,
+              size: 16,
+              color: t.text,
+            ),
+          ),
         ),
       ),
     );
@@ -632,15 +676,22 @@ class BoltLatch extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-// Planed-wood rail slider with chunky oak knob.
+// Planed-wood rail slider with chunky knob.
 // ---------------------------------------------------------------------------
 class WoodSlider extends StatelessWidget {
   final double value;
   final ValueChanged<double> onChanged;
-  const WoodSlider({super.key, required this.value, required this.onChanged});
+  final WorkshopThemeDef? theme;
+  const WoodSlider({
+    super.key,
+    required this.value,
+    required this.onChanged,
+    this.theme,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final t = theme ?? WorkshopThemes.all[0];
     return LayoutBuilder(
       builder: (context, constraints) {
         final w = constraints.maxWidth;
@@ -657,29 +708,26 @@ class WoodSlider extends StatelessWidget {
             child: Stack(
               alignment: Alignment.center,
               children: [
-                // Planed rail.
                 Container(
                   height: 12,
                   decoration: BoxDecoration(
-                    color: Workshop.oakDark,
+                    color: t.blockDark,
                     borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: Workshop.walnut, width: 1.5),
+                    border: Border.all(color: t.trayFrame, width: 1.5),
                     boxShadow: Workshop.insetShadow,
                   ),
                 ),
-                // Filled portion (sawdust tint).
                 Align(
                   alignment: Alignment.centerLeft,
                   child: Container(
                     height: 8,
                     width: max(8.0, w * value),
                     decoration: BoxDecoration(
-                      color: Workshop.sawdust.withValues(alpha: 0.85),
+                      color: t.accentLight.withValues(alpha: 0.85),
                       borderRadius: BorderRadius.circular(4),
                     ),
                   ),
                 ),
-                // Chunky oak knob.
                 Positioned(
                   left: (w - 34) * value,
                   child: Container(
@@ -687,12 +735,11 @@ class WoodSlider extends StatelessWidget {
                     height: 34,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color: Workshop.oakMid,
-                      border: Border.all(color: Workshop.walnut, width: 2.5),
+                      color: t.blockMid,
+                      border: Border.all(color: t.trayFrame, width: 2.5),
                       boxShadow: Workshop.restingShadow,
                     ),
-                    child: const Icon(Icons.grain,
-                        size: 16, color: Workshop.burntUmber),
+                    child: Icon(Icons.grain, size: 16, color: t.text),
                   ),
                 ),
               ],
@@ -705,28 +752,34 @@ class WoodSlider extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-// Brick-red combo luggage tag.
+// Combo luggage tag.
 // ---------------------------------------------------------------------------
 class ComboTag extends StatelessWidget {
   final int combo;
-  const ComboTag({super.key, required this.combo});
+  final WorkshopThemeDef? theme;
+  const ComboTag({
+    super.key,
+    required this.combo,
+    this.theme,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final t = theme ?? WorkshopThemes.all[0];
     if (combo < 2) return const SizedBox.shrink();
     return Transform.rotate(
       angle: -0.06,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
         decoration: BoxDecoration(
-          color: Workshop.brickRed,
+          color: t.comboRed,
           borderRadius: BorderRadius.circular(4),
-          border: Border.all(color: Workshop.walnut, width: 1.5),
+          border: Border.all(color: t.trayFrame, width: 1.5),
           boxShadow: Workshop.restingShadow,
         ),
         child: Text(
           'COMBO ×$combo',
-          style: Workshop.label(14, color: Workshop.sawdust),
+          style: Workshop.label(14, color: t.kraft),
         ),
       ),
     );
@@ -738,7 +791,12 @@ class ComboTag extends StatelessWidget {
 // ---------------------------------------------------------------------------
 class SawdustMotes extends StatefulWidget {
   final bool active;
-  const SawdustMotes({super.key, required this.active});
+  final WorkshopThemeDef? theme;
+  const SawdustMotes({
+    super.key,
+    required this.active,
+    this.theme,
+  });
 
   @override
   State<SawdustMotes> createState() => _SawdustMotesState();
@@ -752,8 +810,7 @@ class _SawdustMotesState extends State<SawdustMotes>
   @override
   void initState() {
     super.initState();
-    _c = AnimationController(
-        vsync: this, duration: const Duration(seconds: 3))
+    _c = AnimationController(vsync: this, duration: const Duration(seconds: 3))
       ..repeat();
   }
 
@@ -766,10 +823,11 @@ class _SawdustMotesState extends State<SawdustMotes>
   @override
   Widget build(BuildContext context) {
     if (!widget.active) return const SizedBox.shrink();
+    final t = widget.theme ?? WorkshopThemes.all[0];
     return AnimatedBuilder(
       animation: _c,
       builder: (_, _) => CustomPaint(
-        painter: _MotePainter(_c.value, _rnd),
+        painter: _MotePainter(_c.value, _rnd, t),
       ),
     );
   }
@@ -778,11 +836,12 @@ class _SawdustMotesState extends State<SawdustMotes>
 class _MotePainter extends CustomPainter {
   final double t;
   final Random rnd;
-  _MotePainter(this.t, this.rnd);
+  final WorkshopThemeDef theme;
+  _MotePainter(this.t, this.rnd, this.theme);
 
   @override
   void paint(Canvas canvas, Size size) {
-    final p = Paint()..color = Workshop.lampAmber.withValues(alpha: 0.75);
+    final p = Paint()..color = theme.lampAmber.withValues(alpha: 0.75);
     for (var i = 0; i < 14; i++) {
       final x = ((rnd.nextDouble() + t * (0.05 + rnd.nextDouble() * 0.1)) % 1) *
           size.width;
@@ -793,4 +852,193 @@ class _MotePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _MotePainter old) => old.t != t;
+}
+
+// ---------------------------------------------------------------------------
+// Sawdust particle burst on clear: chips fly off the cleared cells.
+// ---------------------------------------------------------------------------
+class ClearBurst extends StatefulWidget {
+  /// cell index -> chip color.
+  final Map<int, Color> cells;
+  final double pitch; // board cell pitch in px
+  final int burstId;
+  final WorkshopThemeDef? theme;
+  const ClearBurst({
+    super.key,
+    required this.cells,
+    required this.pitch,
+    required this.burstId,
+    this.theme,
+  });
+
+  @override
+  State<ClearBurst> createState() => _ClearBurstState();
+}
+
+class _ClearBurstState extends State<ClearBurst>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _c;
+
+  @override
+  void initState() {
+    super.initState();
+    _c = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 750))
+      ..forward();
+  }
+
+  @override
+  void didUpdateWidget(covariant ClearBurst old) {
+    super.didUpdateWidget(old);
+    if (widget.burstId != old.burstId) _c.forward(from: 0);
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.cells.isEmpty) return const SizedBox.shrink();
+    final t = widget.theme ?? WorkshopThemes.all[0];
+    return AnimatedBuilder(
+      animation: _c,
+      builder: (_, _) => CustomPaint(
+        painter: _BurstPainter(
+          progress: _c.value,
+          cells: widget.cells,
+          pitch: widget.pitch,
+          seed: widget.burstId,
+          dust: t.accentLight,
+        ),
+      ),
+    );
+  }
+}
+
+class _BurstPainter extends CustomPainter {
+  final double progress;
+  final Map<int, Color> cells;
+  final double pitch;
+  final int seed;
+  final Color dust;
+  _BurstPainter({
+    required this.progress,
+    required this.cells,
+    required this.pitch,
+    required this.seed,
+    required this.dust,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rnd = Random(seed * 7919 + 13);
+    for (final e in cells.entries) {
+      final r = e.key ~/ 8, c = e.key % 8;
+      final origin = Offset((c + 0.5) * pitch, (r + 0.5) * pitch);
+      // 3 chips per cleared cell.
+      for (var k = 0; k < 3; k++) {
+        final ang = rnd.nextDouble() * pi * 2;
+        final speed = pitch * (0.6 + rnd.nextDouble() * 1.6);
+        final dx = cos(ang) * speed * progress;
+        final dy = sin(ang) * speed * progress - pitch * 0.9 * progress +
+            pitch * 2.2 * progress * progress; // gravity arc
+        final pos = origin + Offset(dx, dy);
+        final alpha = (1 - progress).clamp(0.0, 1.0);
+        final col = (k == 0 ? e.value : dust).withValues(alpha: alpha);
+        final rad = pitch * (0.05 + rnd.nextDouble() * 0.07) * (1 - progress * 0.5);
+        canvas.drawCircle(pos, rad, Paint()..color = col);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _BurstPainter old) =>
+      old.progress != progress || old.seed != seed;
+}
+
+// ---------------------------------------------------------------------------
+// Combo celebration: big wooden luggage tag that slams in and fades.
+// ---------------------------------------------------------------------------
+class ComboCelebration extends StatefulWidget {
+  final int combo;
+  final int celebrateId;
+  final WorkshopThemeDef? theme;
+  const ComboCelebration({
+    super.key,
+    required this.combo,
+    required this.celebrateId,
+    this.theme,
+  });
+
+  @override
+  State<ComboCelebration> createState() => _ComboCelebrationState();
+}
+
+class _ComboCelebrationState extends State<ComboCelebration>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _c;
+
+  @override
+  void initState() {
+    super.initState();
+    _c = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 950))
+      ..forward();
+  }
+
+  @override
+  void didUpdateWidget(covariant ComboCelebration old) {
+    super.didUpdateWidget(old);
+    if (widget.celebrateId != old.celebrateId) _c.forward(from: 0);
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.combo < 2) return const SizedBox.shrink();
+    final t = widget.theme ?? WorkshopThemes.all[0];
+    return IgnorePointer(
+      child: AnimatedBuilder(
+        animation: _c,
+        builder: (_, _) {
+          final v = _c.value;
+          final scale = v < 0.25
+              ? Curves.easeOutBack.transform(v / 0.25)
+              : 1.0;
+          final fade = v > 0.7 ? (1 - (v - 0.7) / 0.3) : 1.0;
+          return Opacity(
+            opacity: fade.clamp(0.0, 1.0),
+            child: Transform.scale(
+              scale: scale.clamp(0.0, 1.3),
+              child: Transform.rotate(
+                angle: -0.05,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 26, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: t.comboRed,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: t.trayFrame, width: 3),
+                    boxShadow: Workshop.liftedShadow,
+                  ),
+                  child: Text(
+                    'COMBO ×${widget.combo}',
+                    style: Workshop.burned(34, color: t.kraft),
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
 }
