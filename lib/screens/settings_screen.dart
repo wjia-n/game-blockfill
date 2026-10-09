@@ -29,6 +29,7 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   late final TextEditingController _name;
+  late final FocusNode _nameFocus;
 
   WorkshopThemeDef get _t => widget.settings.theme;
 
@@ -36,10 +37,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void initState() {
     super.initState();
     _name = TextEditingController(text: widget.settings.playerName);
+    _nameFocus = FocusNode();
+    _nameFocus.addListener(_commitNameOnFocusLoss);
+  }
+
+  /// Commits the rename when the field loses focus — not just on
+  /// keyboard-done or the check button. Without this, a tap-elsewhere or
+  /// back-navigation silently drops the typed name and renames appear
+  /// "not saved".
+  void _commitNameOnFocusLoss() {
+    if (_nameFocus.hasFocus) return;
+    _commitName();
+  }
+
+  /// Canonicalises the field through setPlayerName and echoes the stored
+  /// value back so the field never shows an unsaved/uncleaned variant.
+  void _commitName() {
+    final s = widget.settings;
+    if (_name.text == s.playerName) return;
+    s.setPlayerName(_name.text);
+    _name.text = s.playerName;
   }
 
   @override
   void dispose() {
+    // Belt and braces: commit any uncommitted rename on screen teardown.
+    _commitName();
+    _nameFocus.removeListener(_commitNameOnFocusLoss);
+    _nameFocus.dispose();
     _name.dispose();
     super.dispose();
   }
@@ -78,6 +103,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   ),
                                   child: TextField(
                                     controller: _name,
+                                    focusNode: _nameFocus,
                                     style: Workshop.body(16, color: t.kraft),
                                     decoration: InputDecoration(
                                       border: InputBorder.none,
@@ -87,8 +113,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                               alpha: 0.5)),
                                     ),
                                     onSubmitted: (v) {
-                                      s.setPlayerName(v);
-                                      _name.text = s.playerName;
+                                      _commitName();
                                       widget.audio.click();
                                     },
                                   ),
@@ -100,8 +125,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 size: 44,
                                 icon: Icons.check,
                                 onTap: () {
-                                  s.setPlayerName(_name.text);
-                                  _name.text = s.playerName;
+                                  _commitName();
                                   widget.audio.click();
                                   setState(() {});
                                 },
