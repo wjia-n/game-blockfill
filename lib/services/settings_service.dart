@@ -34,7 +34,7 @@ class BlockFillSettings extends ChangeNotifier {
   String themeId = 'classic';
   int blockStyleId = 0;
   int boardAccentId = 0;
-  bool isPro = false;
+  bool isPro = true; // everything unlocked — no Pro version
 
   int bestClassic = 0;
   int bestBlitz = 0;
@@ -78,7 +78,7 @@ class BlockFillSettings extends ChangeNotifier {
         (p.getInt(_kBlockStyle) ?? 0).clamp(0, BlockStyles.all.length - 1);
     boardAccentId =
         (p.getInt(_kAccent) ?? 0).clamp(0, BoardAccents.all.length - 1);
-    isPro = p.getBool(_kIsPro) ?? false;
+    isPro = true; // everything unlocked
     bestClassic = p.getInt(_kBestClassic) ?? 0;
     bestBlitz = p.getInt(_kBestBlitz) ?? 0;
     dailyPlayedDate = p.getString(_kDailyPlayed);

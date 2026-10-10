@@ -31,26 +31,10 @@ class _ProScreenState extends State<ProScreen> {
   @override
   void initState() {
     super.initState();
-    widget.store.proPurchased.addListener(_onPro);
     widget.store.lastThanks.addListener(_onThanks);
   }
 
-  void _onPro() {
-    if (widget.store.proPurchased.value && mounted) {
-      widget.settings.setPro(true);
-      widget.audio.gameStart();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('PRO unlocked — enjoy the full workshop!',
-              style: Workshop.body(15, color: _t.kraft)),
-          backgroundColor: _t.trayFrame,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-      widget.store.proPurchased.value = false;
-    }
-  }
-
+  
   void _onThanks() {
     final msg = widget.store.lastThanks.value;
     if (msg == null || !mounted) return;
@@ -67,7 +51,6 @@ class _ProScreenState extends State<ProScreen> {
 
   @override
   void dispose() {
-    widget.store.proPurchased.removeListener(_onPro);
     widget.store.lastThanks.removeListener(_onThanks);
     super.dispose();
   }
@@ -113,16 +96,7 @@ class _ProScreenState extends State<ProScreen> {
                     padding: const EdgeInsets.fromLTRB(20, 4, 20, 30),
                     child: Column(
                       children: [
-                        _ComparisonCard(theme: t, isPro: s.isPro),
-                        const SizedBox(height: 16),
-                        _BuyCard(
-                          theme: t,
-                          settings: s,
-                          store: store,
-                          audio: widget.audio,
-                        ),
-                        const SizedBox(height: 16),
-                        _TipsCard(
+                                                _TipsCard(
                           theme: t,
                           store: store,
                           audio: widget.audio,
@@ -142,89 +116,6 @@ class _ProScreenState extends State<ProScreen> {
 }
 
 /// Free vs Pro comparison table — buyers see the big difference.
-class _ComparisonCard extends StatelessWidget {
-  final WorkshopThemeDef theme;
-  final bool isPro;
-  const _ComparisonCard({required this.theme, required this.isPro});
-
-  @override
-  Widget build(BuildContext context) {
-    const rows = [
-      ('Complete Block Fill game', true, true),
-      ('Classic, Blitz & Daily modes', true, true),
-      ('Full rules engine + hints', true, true),
-      ('Music & workshop sound effects', true, true),
-      ('Renameable carpenter profile', true, true),
-      ('Workshop themes', '4', '14 + custom'),
-      ('Block materials', '4', '12'),
-      ('Board accents', '3', '6'),
-      ('Custom workshop creator', false, true),
-      ('PRO supporter badge', false, true),
-    ];
-    return KraftPlaque(
-      theme: theme,
-      padding: const EdgeInsets.fromLTRB(18, 24, 18, 16),
-      child: Column(
-        children: [
-          Text('Free vs PRO', style: Workshop.burned(20, color: theme.text)),
-          const SizedBox(height: 4),
-          Text(
-            'One purchase. Yours forever.',
-            style: Workshop.body(13, color: theme.textSoft),
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              const Expanded(flex: 5, child: SizedBox()),
-              Expanded(
-                  flex: 2,
-                  child: Text('FREE',
-                      style: Workshop.label(12, color: theme.textSoft),
-                      textAlign: TextAlign.center)),
-              Expanded(
-                  flex: 2,
-                  child: Text('PRO',
-                      style: Workshop.label(12, color: theme.text),
-                      textAlign: TextAlign.center)),
-            ],
-          ),
-          Divider(height: 14, color: theme.kraftDark),
-          for (final r in rows)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 5),
-              child: Row(
-                children: [
-                  Expanded(
-                    flex: 5,
-                    child: Text(r.$1,
-                        style: Workshop.body(13, color: theme.text)),
-                  ),
-                  Expanded(flex: 2, child: _Cell(value: r.$2, theme: theme)),
-                  Expanded(flex: 2, child: _Cell(value: r.$3, theme: theme)),
-                ],
-              ),
-            ),
-          if (isPro)
-            Padding(
-              padding: const EdgeInsets.only(top: 12),
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(18),
-                  color: theme.accent.withValues(alpha: 0.25),
-                  border: Border.all(color: theme.accentLight),
-                ),
-                child: Text('✦ PRO ACTIVE ✦',
-                    style: Workshop.label(14, color: theme.text)),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
 class _Cell extends StatelessWidget {
   final Object value; // bool | String
   final WorkshopThemeDef theme;
@@ -251,89 +142,6 @@ class _Cell extends StatelessWidget {
   }
 }
 
-class _BuyCard extends StatelessWidget {
-  final WorkshopThemeDef theme;
-  final BlockFillSettings settings;
-  final StoreService store;
-  final WorkshopAudio audio;
-  const _BuyCard({
-    required this.theme,
-    required this.settings,
-    required this.store,
-    required this.audio,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final pro = store.proProduct;
-    return KraftPlaque(
-      theme: theme,
-      padding: const EdgeInsets.fromLTRB(18, 24, 18, 16),
-      child: Column(
-        children: [
-          Text('Unlock PRO', style: Workshop.burned(20, color: theme.text)),
-          const SizedBox(height: 8),
-          if (settings.isPro)
-            Text('You already own PRO — thank you!',
-                style: Workshop.body(14, color: theme.text),
-                textAlign: TextAlign.center)
-          else if (!store.storeReady)
-            Text(
-              store.error ?? 'Available after store setup.',
-              style: Workshop.body(14, color: theme.textSoft),
-              textAlign: TextAlign.center,
-            )
-          else if (pro != null) ...[
-            Text(
-                pro.description.isNotEmpty
-                    ? pro.description
-                    : 'Unlock the full workshop, forever.',
-                style: Workshop.body(14, color: theme.text),
-                textAlign: TextAlign.center),
-            const SizedBox(height: 12),
-            ValueListenableBuilder<bool>(
-              valueListenable: store.purchaseInProgress,
-              builder: (_, busy, _) => OakButton(
-                theme: theme,
-                label: busy ? 'Working…' : 'Get PRO — ${pro.price}',
-                width: 260,
-                fontSize: 18,
-                onTap: busy
-                    ? () {}
-                    : () {
-                        audio.click();
-                        store.buyPro();
-                      },
-              ),
-            ),
-          ],
-          ValueListenableBuilder<String?>(
-            valueListenable: store.purchaseError,
-            builder: (_, err, _) => err == null
-                ? const SizedBox.shrink()
-                : Padding(
-                    padding: const EdgeInsets.only(top: 10),
-                    child: Text(err,
-                        style: Workshop.body(13, color: theme.comboRed),
-                        textAlign: TextAlign.center),
-                  ),
-          ),
-          const SizedBox(height: 10),
-          TextButton(
-            onPressed: () {
-              audio.click();
-              store.restore();
-            },
-            child: Text('Restore purchases',
-                style: Workshop.label(13, color: theme.textSoft)),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// Consumable tips — pure support, with real store prices.
 class _TipsCard extends StatelessWidget {
   final WorkshopThemeDef theme;
   final StoreService store;
