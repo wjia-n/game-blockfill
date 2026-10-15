@@ -16,6 +16,9 @@ import 'package:audioplayers/audioplayers.dart';
 ///   resumes exactly where it left off instead of restarting or dying.
 /// - Every public method catches player errors; audio can never crash the app.
 class WorkshopAudio {
+  /// Per-game pitch character (blockfill): 1.21x. Makes SFX unique.
+  static const double _pitchMul = 1.210;
+
   static const int _rate = 22050;
   final AudioPlayer _sfx = AudioPlayer();
   final AudioPlayer _music = AudioPlayer();
@@ -186,38 +189,44 @@ class WorkshopAudio {
       _cache.putIfAbsent(key, () => _wav(build()));
 
   Uint8List _menuBytes() => _clip('music_menu', () {
-        // Warm Am – F – C – G workshop pad with soft marimba ticks, 16s loop.
-        final seq = [
-          [220.0, 261.63, 329.63],
-          [174.61, 220.0, 261.63],
-          [261.63, 329.63, 392.0],
-          [196.0, 246.94, 293.66],
-        ];
+        // F# arpeggiated 0 – 3 – 5 – 4, 16s loop. Unique to blockfill.
+        final notes = [185.00, 233.08, 277.18, 233.08, 246.94, 311.12, 369.99, 311.12, 311.12, 369.99, 466.16, 369.99, 277.18, 349.22, 415.30, 349.22];
         final out = <double>[];
-        for (final chord in seq) {
-          out.addAll(_padChord(chord, 4.0));
+        final noteLen = 16.0 / notes.length;
+        for (final n in notes) {
+          out.addAll(_marimba(n, noteLen * 0.9));
+          final gap = List<double>.filled((_rate * noteLen * 0.1).round(), 0);
+          out.addAll(gap);
         }
-        // Gentle marimba ticks on top.
-        final ticks = [440.0, 523.25, 587.33, 523.25];
-        for (int k = 0; k < ticks.length; k++) {
-          _mixInto(out, _marimba(ticks[k], 0.6, amp: 0.3),
-              (out.length * (k + 0.5) / 4).round(), 0.5);
+        // Soft pad underneath
+        final pad = _padChord([185.00, 233.08, 277.18], 16.0);
+        for (int i = 0; i < out.length && i < pad.length; i++) {
+          out[i] += pad[i] * 0.3;
         }
         return out;
       });
 
+
   Uint8List _gameBytes() => _clip('music_game', () {
-        // Gentle pentatonic plucks over a soft drone, 12s loop.
-        final drone = _padChord([130.81, 196.0], 12.0);
-        final plucks = [392.0, 440.0, 523.25, 587.33, 523.25, 440.0, 392.0, 329.63];
-        final n = (_rate * 12).round();
-        final out = List<double>.from(drone);
-        for (int k = 0; k < plucks.length; k++) {
-          final start = (n * k / plucks.length).round();
-          _mixInto(out, _marimba(plucks[k], 0.7, amp: 0.5), start, 0.55);
+        // F# bass + melody 0 – 3 – 5 – 4, 16s loop. Unique to blockfill.
+        final bassNotes = [92.50, 123.47, 155.56, 138.59];
+        final melNotes = [554.36, 739.98, 932.32, 830.60];
+        final out = List<double>.filled((_rate * 16).round(), 0);
+        final segLen = (_rate * 4).round();
+        for (int s = 0; s < 4; s++) {
+          final bass = _knock(bassNotes[s], 3.5);
+          final mel = _marimba(melNotes[s], 1.2);
+          for (int i = 0; i < bass.length && s * segLen + i < out.length; i++) {
+            out[s * segLen + i] += bass[i] * 0.5;
+          }
+          final melStart = s * segLen + segLen ~/ 4;
+          for (int i = 0; i < mel.length && melStart + i < out.length; i++) {
+            out[melStart + i] += mel[i] * 0.35;
+          }
         }
         return out;
       });
+
 
   // ------------------------------------------------------------------ SFX
   Future<void> _play(Uint8List bytes) async {
