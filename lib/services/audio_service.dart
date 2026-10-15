@@ -16,8 +16,6 @@ import 'package:audioplayers/audioplayers.dart';
 ///   resumes exactly where it left off instead of restarting or dying.
 /// - Every public method catches player errors; audio can never crash the app.
 class WorkshopAudio {
-  /// Per-game pitch character (blockfill): 1.21x. Makes SFX unique.
-  static const double _pitchMul = 1.210;
 
   static const int _rate = 22050;
   final AudioPlayer _sfx = AudioPlayer();
