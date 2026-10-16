@@ -8,6 +8,7 @@ import '../widgets/wood.dart';
 import 'custom_theme_screen.dart';
 import 'menu_screen.dart';
 import 'pro_screen.dart';
+import '../transfer/transfer_ui.dart';
 
 /// Workshop settings: profile name, theme picker (14), block styles (12),
 /// board accents (6), custom creator, sound/music/haptics/color-blind,
@@ -81,6 +82,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           child: SafeArea(
             child: Column(
               children: [
+              TransferSaveTile(gameSlug: 'blockfill'),
                 _header(t),
                 Expanded(
                   child: SingleChildScrollView(
